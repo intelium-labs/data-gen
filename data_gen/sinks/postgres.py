@@ -1,0 +1,404 @@
+"""PostgreSQL sink for exporting data to database."""
+
+import logging
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
+
+
+class PostgresSink:
+    """Output data to PostgreSQL database."""
+
+    # Entity table mapping and insert order (respects FK constraints)
+    ENTITY_ORDER = [
+        "customers",
+        "properties",
+        "stocks",
+        "accounts",
+        "credit_cards",
+        "loans",
+    ]
+
+    TABLE_COLUMNS = {
+        "customers": [
+            "customer_id",
+            "cpf",
+            "name",
+            "email",
+            "phone",
+            "street",
+            "number",
+            "complement",
+            "neighborhood",
+            "city",
+            "state",
+            "postal_code",
+            "monthly_income",
+            "employment_status",
+            "credit_score",
+            "created_at",
+        ],
+        "accounts": [
+            "account_id",
+            "customer_id",
+            "account_type",
+            "bank_code",
+            "branch",
+            "account_number",
+            "balance",
+            "status",
+            "created_at",
+        ],
+        "transactions": [
+            "transaction_id",
+            "account_id",
+            "transaction_type",
+            "amount",
+            "direction",
+            "counterparty_key",
+            "counterparty_name",
+            "description",
+            "timestamp",
+            "status",
+            "pix_e2e_id",
+            "pix_key_type",
+        ],
+        "credit_cards": [
+            "card_id",
+            "customer_id",
+            "card_number_masked",
+            "brand",
+            "credit_limit",
+            "available_limit",
+            "due_day",
+            "status",
+            "created_at",
+        ],
+        "card_transactions": [
+            "transaction_id",
+            "card_id",
+            "merchant_name",
+            "merchant_category",
+            "mcc_code",
+            "amount",
+            "installments",
+            "timestamp",
+            "status",
+            "location_city",
+            "location_country",
+        ],
+        "loans": [
+            "loan_id",
+            "customer_id",
+            "loan_type",
+            "principal",
+            "interest_rate",
+            "term_months",
+            "amortization_system",
+            "status",
+            "disbursement_date",
+            "property_id",
+            "created_at",
+        ],
+        "installments": [
+            "installment_id",
+            "loan_id",
+            "installment_number",
+            "due_date",
+            "principal_amount",
+            "interest_amount",
+            "total_amount",
+            "paid_date",
+            "paid_amount",
+            "status",
+        ],
+        "properties": [
+            "property_id",
+            "property_type",
+            "street",
+            "number",
+            "complement",
+            "neighborhood",
+            "city",
+            "state",
+            "postal_code",
+            "appraised_value",
+            "area_sqm",
+            "registration_number",
+        ],
+        "stocks": [
+            "stock_id",
+            "ticker",
+            "company_name",
+            "sector",
+            "segment",
+            "current_price",
+            "currency",
+            "isin",
+            "lot_size",
+            "created_at",
+        ],
+    }
+
+    def __init__(self, connection_string: str) -> None:
+        """Initialize PostgreSQL sink.
+
+        Parameters
+        ----------
+        connection_string : str
+            PostgreSQL connection string (e.g., "postgresql://user:pass@localhost/db").
+        """
+        try:
+            import psycopg
+
+            self.conn = psycopg.connect(connection_string)
+            self._psycopg = psycopg
+        except ImportError:
+            raise ImportError("psycopg is required for PostgresSink. Install with: pip install 'psycopg[binary]'")
+
+        self._counts: dict[str, int] = {}
+
+    def write_batch(self, entity_type: str, records: list[Any]) -> None:
+        """Write a batch of records to PostgreSQL."""
+        if not records:
+            return
+
+        if entity_type not in self.TABLE_COLUMNS:
+            logger.warning("Unknown entity type: %s", entity_type)
+            return
+
+        columns = self.TABLE_COLUMNS[entity_type]
+        table_name = entity_type
+
+        # Prepare data
+        rows = []
+        for record in records:
+            row = self._extract_row(record, columns, entity_type)
+            rows.append(row)
+
+        # Build INSERT statement
+        placeholders = ", ".join(["%s"] * len(columns))
+        column_names = ", ".join(columns)
+        sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+
+        # Execute batch insert
+        with self.conn.cursor() as cur:
+            cur.executemany(sql, rows)
+        self.conn.commit()
+
+        self._counts[entity_type] = self._counts.get(entity_type, 0) + len(records)
+        logger.info("Inserted %d records into %s", len(records), table_name)
+
+    def write_stream(
+        self,
+        topic: str,
+        generator: Iterator[Any],
+        rate_per_second: float,
+        duration_seconds: float,
+    ) -> None:
+        """Stream records to PostgreSQL (batch inserts)."""
+        import time
+
+        # Infer entity type from topic
+        # e.g., "dev.financial.transactions.created.v1" -> "transactions"
+        parts = topic.split(".")
+        entity_type = parts[2] if len(parts) > 2 else topic
+
+        if entity_type not in self.TABLE_COLUMNS:
+            logger.warning("Cannot infer table from topic: %s", topic)
+            return
+
+        start_time = time.time()
+        batch: list[Any] = []
+        batch_size = 1000
+
+        for record in generator:
+            if time.time() - start_time >= duration_seconds:
+                break
+
+            batch.append(record)
+
+            if len(batch) >= batch_size:
+                self.write_batch(entity_type, batch)
+                batch = []
+
+            # Simple rate limiting
+            if rate_per_second > 0:
+                time.sleep(1.0 / rate_per_second)
+
+        # Write remaining records
+        if batch:
+            self.write_batch(entity_type, batch)
+
+    def close(self) -> None:
+        """Close database connection."""
+        self.conn.close()
+        logger.info("PostgreSQL sink closed")
+        for entity_type, count in self._counts.items():
+            logger.info("  %s: %d records", entity_type, count)
+
+    def create_tables(self) -> None:
+        """Create database tables (for development/testing)."""
+        ddl = """
+        CREATE TABLE IF NOT EXISTS customers (
+            customer_id VARCHAR(36) PRIMARY KEY,
+            cpf VARCHAR(14) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            email VARCHAR(255),
+            phone VARCHAR(20),
+            street VARCHAR(255),
+            number VARCHAR(20),
+            complement VARCHAR(100),
+            neighborhood VARCHAR(100),
+            city VARCHAR(100),
+            state VARCHAR(2),
+            postal_code VARCHAR(10),
+            monthly_income DECIMAL(15,2),
+            employment_status VARCHAR(20),
+            credit_score INTEGER,
+            created_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS properties (
+            property_id VARCHAR(36) PRIMARY KEY,
+            property_type VARCHAR(20),
+            street VARCHAR(255),
+            number VARCHAR(20),
+            complement VARCHAR(100),
+            neighborhood VARCHAR(100),
+            city VARCHAR(100),
+            state VARCHAR(2),
+            postal_code VARCHAR(10),
+            appraised_value DECIMAL(15,2),
+            area_sqm DECIMAL(10,2),
+            registration_number VARCHAR(50)
+        );
+
+        CREATE TABLE IF NOT EXISTS stocks (
+            stock_id VARCHAR(36) PRIMARY KEY,
+            ticker VARCHAR(10) NOT NULL,
+            company_name VARCHAR(255) NOT NULL,
+            sector VARCHAR(50),
+            segment VARCHAR(50),
+            current_price DECIMAL(15,2),
+            currency VARCHAR(3) DEFAULT 'BRL',
+            isin VARCHAR(20),
+            lot_size INTEGER DEFAULT 100,
+            created_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS accounts (
+            account_id VARCHAR(36) PRIMARY KEY,
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
+            account_type VARCHAR(20),
+            bank_code VARCHAR(10),
+            branch VARCHAR(10),
+            account_number VARCHAR(20),
+            balance DECIMAL(15,2),
+            status VARCHAR(20),
+            created_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS credit_cards (
+            card_id VARCHAR(36) PRIMARY KEY,
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
+            card_number_masked VARCHAR(20),
+            brand VARCHAR(20),
+            credit_limit DECIMAL(15,2),
+            available_limit DECIMAL(15,2),
+            due_day INTEGER,
+            status VARCHAR(20),
+            created_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS loans (
+            loan_id VARCHAR(36) PRIMARY KEY,
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
+            loan_type VARCHAR(20),
+            principal DECIMAL(15,2),
+            interest_rate DECIMAL(10,6),
+            term_months INTEGER,
+            amortization_system VARCHAR(10),
+            status VARCHAR(20),
+            disbursement_date DATE,
+            property_id VARCHAR(36) REFERENCES properties(property_id),
+            created_at TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS transactions (
+            transaction_id VARCHAR(36) PRIMARY KEY,
+            account_id VARCHAR(36) REFERENCES accounts(account_id),
+            transaction_type VARCHAR(20),
+            amount DECIMAL(15,2),
+            direction VARCHAR(10),
+            counterparty_key VARCHAR(255),
+            counterparty_name VARCHAR(255),
+            description TEXT,
+            timestamp TIMESTAMP,
+            status VARCHAR(20),
+            pix_e2e_id VARCHAR(50),
+            pix_key_type VARCHAR(20)
+        );
+
+        CREATE TABLE IF NOT EXISTS card_transactions (
+            transaction_id VARCHAR(36) PRIMARY KEY,
+            card_id VARCHAR(36) REFERENCES credit_cards(card_id),
+            merchant_name VARCHAR(255),
+            merchant_category VARCHAR(100),
+            mcc_code VARCHAR(10),
+            amount DECIMAL(15,2),
+            installments INTEGER,
+            timestamp TIMESTAMP,
+            status VARCHAR(20),
+            location_city VARCHAR(100),
+            location_country VARCHAR(10)
+        );
+
+        CREATE TABLE IF NOT EXISTS installments (
+            installment_id VARCHAR(36) PRIMARY KEY,
+            loan_id VARCHAR(36) REFERENCES loans(loan_id),
+            installment_number INTEGER,
+            due_date DATE,
+            principal_amount DECIMAL(15,2),
+            interest_amount DECIMAL(15,2),
+            total_amount DECIMAL(15,2),
+            paid_date DATE,
+            paid_amount DECIMAL(15,2),
+            status VARCHAR(20)
+        );
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(ddl)
+        self.conn.commit()
+        logger.info("Database tables created")
+
+    def _extract_row(self, record: Any, columns: list[str], entity_type: str) -> tuple:
+        """Extract row values from a record."""
+        if is_dataclass(record):
+            data = asdict(record)
+        elif isinstance(record, dict):
+            data = record
+        else:
+            raise ValueError(f"Unsupported record type: {type(record)}")
+
+        # Flatten nested address for customers and properties
+        if entity_type in ("customers", "properties") and "address" in data:
+            address = data.pop("address", {})
+            data.update(address)
+
+        values = []
+        for col in columns:
+            value = data.get(col)
+            # Convert types
+            if isinstance(value, Decimal):
+                value = float(value)
+            elif isinstance(value, datetime):
+                value = value
+            elif isinstance(value, date):
+                value = value
+            values.append(value)
+
+        return tuple(values)

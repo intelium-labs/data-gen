@@ -44,3 +44,6 @@ htmlcov/
 # Misc
 *.log
 .DS_Store
+
+# Local generated data
+local/
