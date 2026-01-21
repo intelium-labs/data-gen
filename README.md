@@ -1,5 +1,3 @@
-# Data-Gen
-
 <p align="center">
   <strong>Plataforma de Geração de Dados Sintéticos para Múltiplos Domínios</strong>
 </p>
