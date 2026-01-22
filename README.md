@@ -99,20 +99,24 @@ pip install -e ".[dev]"
 
 ```python
 from data_gen.generators.financial import CustomerGenerator, AccountGenerator
-from data_gen.store import FinancialDataStore
+from data_gen.store.financial import FinancialDataStore
 
 # Criar store e generators
 store = FinancialDataStore()
 customer_gen = CustomerGenerator(seed=42)
 account_gen = AccountGenerator(seed=42)
 
-# Gerar customers
-for customer in customer_gen.generate(100):
+# Gerar customers (generate_batch retorna um iterator)
+for customer in customer_gen.generate_batch(100):
     store.add_customer(customer)
 
 # Gerar accounts para cada customer
-for customer_id in store.customers:
-    for account in account_gen.generate_for_customer(customer_id):
+for customer in store.customers.values():
+    for account in account_gen.generate_for_customer(
+        customer.customer_id,
+        customer.created_at,
+        customer.monthly_income,
+    ):
         store.add_account(account)
 
 print(f"Customers: {len(store.customers)}")

@@ -240,6 +240,26 @@ class PostgresSink:
         for entity_type, count in self._counts.items():
             logger.info("  %s: %d records", entity_type, count)
 
+    def truncate_tables(self) -> None:
+        """Truncate all tables (respecting FK order - reverse of insert order)."""
+        # Order matters: truncate tables with FKs first (reverse order)
+        truncate_order = [
+            "installments",
+            "card_transactions",
+            "transactions",
+            "loans",
+            "credit_cards",
+            "accounts",
+            "stocks",
+            "properties",
+            "customers",
+        ]
+        with self.conn.cursor() as cur:
+            for table in truncate_order:
+                cur.execute(f"TRUNCATE TABLE {table} CASCADE")
+        self.conn.commit()
+        logger.info("All tables truncated")
+
     def create_tables(self) -> None:
         """Create database tables (for development/testing)."""
         ddl = """

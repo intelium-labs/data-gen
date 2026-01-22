@@ -242,8 +242,12 @@ class KafkaSink:
         result = {}
         for key, value in data.items():
             if isinstance(value, Decimal):
-                # Avro decimal as bytes
-                result[key] = str(value).encode("utf-8")
+                # Avro decimal - convert to scaled integer bytes
+                # For precision=15, scale=2: multiply by 100 and encode as big-endian bytes
+                scaled = int(value * 100)
+                # Calculate minimum bytes needed (at least 1 byte)
+                byte_length = max(1, (scaled.bit_length() + 8) // 8)
+                result[key] = scaled.to_bytes(byte_length, byteorder='big', signed=True)
             elif isinstance(value, datetime):
                 # Avro timestamp-millis
                 result[key] = int(value.timestamp() * 1000)

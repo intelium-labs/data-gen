@@ -158,7 +158,11 @@ def generate_master_data(
     logger.info("Master data generation complete: %s", store.summary())
 
 
-def load_to_postgres(store: FinancialDataStore, connection_string: str) -> None:
+def load_to_postgres(
+    store: FinancialDataStore,
+    connection_string: str,
+    truncate: bool = False,
+) -> None:
     """Load master data to PostgreSQL.
 
     Parameters
@@ -167,6 +171,8 @@ def load_to_postgres(store: FinancialDataStore, connection_string: str) -> None:
         Data store with generated data.
     connection_string : str
         PostgreSQL connection string.
+    truncate : bool
+        If True, truncate tables before inserting (default: False).
     """
     logger.info("Loading master data to PostgreSQL...")
 
@@ -175,6 +181,10 @@ def load_to_postgres(store: FinancialDataStore, connection_string: str) -> None:
     try:
         # Create tables
         sink.create_tables()
+
+        # Truncate tables if requested
+        if truncate:
+            sink.truncate_tables()
 
         # Load in FK order
         sink.write_batch("customers", list(store.customers.values()))
@@ -377,6 +387,11 @@ def main() -> None:
         action="store_true",
         help="Create Kafka topics before loading",
     )
+    parser.add_argument(
+        "--truncate",
+        action="store_true",
+        help="Truncate PostgreSQL tables before loading (allows re-running)",
+    )
 
     args = parser.parse_args()
 
@@ -401,7 +416,7 @@ def main() -> None:
 
     # Load to PostgreSQL
     if not args.skip_postgres:
-        load_to_postgres(store, args.postgres_url)
+        load_to_postgres(store, args.postgres_url, truncate=args.truncate)
 
     # Load to Kafka
     if not args.skip_kafka:
