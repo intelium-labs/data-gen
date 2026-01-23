@@ -27,3 +27,7 @@ class Transaction:
     # Location for fraud detection (optional)
     location_lat: float | None = None
     location_lon: float | None = None
+
+    # Incremental processing fields
+    created_at: datetime | None = None  # Record creation timestamp
+    incremental_id: int = 0  # Sequential ID for incremental processing

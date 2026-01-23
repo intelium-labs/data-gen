@@ -23,6 +23,7 @@ class Stock:
     isin: str  # International Securities Identification Number
     lot_size: int  # Standard lot (usually 100)
     created_at: datetime
+    incremental_id: int = 0  # Sequential ID for incremental processing
 
 
 @dataclass
@@ -46,3 +47,5 @@ class Trade:
     status: str  # PENDING, EXECUTED, CANCELLED, PARTIALLY_FILLED
     executed_at: datetime
     settlement_date: datetime  # T+2 in Brazil
+    created_at: datetime | None = None  # Record creation timestamp
+    incremental_id: int = 0  # Sequential ID for incremental processing

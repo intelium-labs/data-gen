@@ -20,6 +20,7 @@ class Loan:
     disbursement_date: date | None
     property_id: str | None  # For housing finance
     created_at: datetime
+    incremental_id: int = 0  # Sequential ID for incremental processing
 
 
 @dataclass
@@ -36,3 +37,5 @@ class Installment:
     paid_date: date | None
     paid_amount: Decimal | None
     status: str  # PENDING, PAID, LATE, DEFAULT
+    created_at: datetime | None = None  # Record creation timestamp
+    incremental_id: int = 0  # Sequential ID for incremental processing

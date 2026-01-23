@@ -1,6 +1,7 @@
 """Financial domain data store with referential integrity."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from data_gen.models.financial import (
     Account,
@@ -82,6 +83,8 @@ class FinancialDataStore:
 
     def add_property(self, prop: Property) -> None:
         """Add a property to the store."""
+        if prop.created_at is None:
+            prop.created_at = datetime.now()
         self.properties[prop.property_id] = prop
 
     def add_stock(self, stock: Stock) -> None:
@@ -101,6 +104,8 @@ class FinancialDataStore:
         if account.account_type != "INVESTIMENTOS":
             raise ValueError(f"Account {trade.account_id} is not an investment account")
 
+        if trade.created_at is None:
+            trade.created_at = datetime.now()
         idx = len(self.trades)
         self.trades.append(trade)
         if trade.account_id not in self._account_trades:
@@ -112,6 +117,8 @@ class FinancialDataStore:
         if transaction.account_id not in self.accounts:
             raise ValueError(f"Account {transaction.account_id} not found")
 
+        if transaction.created_at is None:
+            transaction.created_at = datetime.now()
         idx = len(self.transactions)
         self.transactions.append(transaction)
         self._account_transactions[transaction.account_id].append(idx)
@@ -121,6 +128,8 @@ class FinancialDataStore:
         if transaction.card_id not in self.credit_cards:
             raise ValueError(f"Credit card {transaction.card_id} not found")
 
+        if transaction.created_at is None:
+            transaction.created_at = datetime.now()
         idx = len(self.card_transactions)
         self.card_transactions.append(transaction)
         self._card_transactions[transaction.card_id].append(idx)
@@ -130,6 +139,8 @@ class FinancialDataStore:
         if installment.loan_id not in self.loans:
             raise ValueError(f"Loan {installment.loan_id} not found")
 
+        if installment.created_at is None:
+            installment.created_at = datetime.now()
         idx = len(self.installments)
         self.installments.append(installment)
         self._loan_installments[installment.loan_id].append(idx)

@@ -21,3 +21,4 @@ class Customer:
     employment_status: str  # EMPLOYED, SELF_EMPLOYED, RETIRED, UNEMPLOYED
     credit_score: int  # 300-850 (like Serasa)
     created_at: datetime
+    incremental_id: int = 0  # Sequential ID for incremental processing

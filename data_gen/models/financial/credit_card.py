@@ -18,6 +18,7 @@ class CreditCard:
     due_day: int  # 1-28
     status: str  # ACTIVE, BLOCKED, CANCELLED
     created_at: datetime
+    incremental_id: int = 0  # Sequential ID for incremental processing
 
 
 @dataclass
@@ -35,3 +36,5 @@ class CardTransaction:
     status: str  # PENDING, APPROVED, DECLINED
     location_city: str | None = None
     location_country: str = "BR"
+    created_at: datetime | None = None  # Record creation timestamp
+    incremental_id: int = 0  # Sequential ID for incremental processing

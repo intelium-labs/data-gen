@@ -24,3 +24,4 @@ class Account:
     balance: Decimal
     status: str  # ACTIVE, BLOCKED, CLOSED
     created_at: datetime
+    incremental_id: int = 0  # Sequential ID for incremental processing
