@@ -1,0 +1,62 @@
+name: Feature Request
+description: Sugira uma nova funcionalidade
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adoramos novas ideias! Descreva sua sugestão abaixo.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Categoria
+      description: Selecione a categoria da feature
+      options:
+        - Novo Generator (novo domínio de dados)
+        - Novo Sink (nova saída de dados)
+        - CloudEvents / Headers
+        - Melhoria de Performance
+        - Docker / Infraestrutura
+        - Documentação
+        - Outro
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Descrição da Feature
+      description: Descreva a funcionalidade que você gostaria de ver
+      placeholder: |
+        Ex: Adicionar suporte para sink Apache Iceberg
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Caso de uso
+      description: Qual problema essa feature resolveria?
+      placeholder: |
+        Ex: Preciso testar pipelines de dados com formato Iceberg
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: Você já tentou alguma alternativa?
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Sugestão de implementação (opcional)
+      description: Se você tem ideias de como implementar, compartilhe aqui
+      placeholder: |
+        Ex: Usar a biblioteca pyiceberg para escrita...
+
+  - type: textarea
+    id: references
+    attributes:
+      label: Referências (opcional)
+      description: Links, artigos ou documentação relevante

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Obrigado por reportar! Preencha as informacoes abaixo para nos ajudar a resolver o problema.
+        Obrigado por reportar! Preencha as informações abaixo para nos ajudar a resolver o problema.
 
   - type: checkboxes
     id: checklist
@@ -14,35 +14,35 @@ body:
       description: Verifique esses itens antes de abrir o bug report
       options:
         - label: Verifiquei se tenho Python 3.9+ instalado
-        - label: Instalei as dependencias com `pip install -r requirements.txt`
+        - label: Instalei as dependências com `pip install -e .` ou `uv pip install -e .`
         - label: Li o README e segui todos os passos
-        - label: Busquei por issues similares e nao encontrei
+        - label: Busquei por issues similares e não encontrei
 
   - type: dropdown
-    id: generator
+    id: component
     attributes:
-      label: Qual gerador de dados?
-      description: Selecione o gerador com problema
+      label: Componente afetado
+      description: Selecione o componente com problema
       options:
-        - ecommerce
-        - financial
-        - iot
-        - clickstream
-        - Todos / Geral
+        - Generators (data_gen/generators/)
+        - Kafka Sink (data_gen/sinks/kafka.py)
+        - PostgreSQL Sink (data_gen/sinks/postgres.py)
+        - CloudEvents Headers
+        - Docker Compose / Infraestrutura
+        - Scripts (load_data.py, etc.)
         - Outro
     validations:
       required: true
 
   - type: dropdown
-    id: output
+    id: sink
     attributes:
-      label: Tipo de output
-      description: Para onde esta enviando os dados?
+      label: Tipo de sink
+      description: Para onde está enviando os dados?
       options:
         - Kafka
+        - PostgreSQL
         - Console / stdout
-        - Arquivo JSON
-        - Arquivo CSV
         - Outro
     validations:
       required: true
@@ -53,21 +53,21 @@ body:
       label: Severidade
       description: Qual o impacto do problema?
       options:
-        - Bloqueante - Nao consigo usar o data-gen
-        - Alto - Funcionalidade importante nao funciona
-        - Medio - Funciona parcialmente ou com workaround
-        - Baixo - Problema menor ou cosmetico
+        - Bloqueante - Não consigo usar o data-gen
+        - Alto - Funcionalidade importante não funciona
+        - Médio - Funciona parcialmente ou com workaround
+        - Baixo - Problema menor ou cosmético
     validations:
       required: true
 
   - type: textarea
     id: description
     attributes:
-      label: Descricao do problema
+      label: Descrição do problema
       description: Descreva o que aconteceu
       placeholder: |
         O que aconteceu?
-        O que voce esperava que acontecesse?
+        O que você esperava que acontecesse?
     validations:
       required: true
 
@@ -77,14 +77,14 @@ body:
       label: Passos para reproduzir
       description: Liste os passos exatos para reproduzir o problema
       placeholder: |
-        1. Clone o repositorio
-        2. Execute `pip install -r requirements.txt`
-        3. Execute `python generate.py --type ecommerce`
+        1. Clone o repositório
+        2. Execute `pip install -e .`
+        3. Execute `python scripts/load_data.py --customers 10`
         4. ...
       value: |
-        1. 
-        2. 
-        3. 
+        1.
+        2.
+        3.
     validations:
       required: true
 
@@ -93,7 +93,7 @@ body:
     attributes:
       label: Comportamento esperado
       description: O que deveria acontecer?
-      placeholder: Descreva o que voce esperava que acontecesse
+      placeholder: Descreva o que você esperava que acontecesse
     validations:
       required: true
 
@@ -109,14 +109,15 @@ body:
   - type: textarea
     id: config
     attributes:
-      label: Configuracao utilizada
-      description: Cole sua configuracao (remova dados sensiveis)
+      label: Configuração utilizada
+      description: Cole sua configuração (remova dados sensíveis)
       render: yaml
       placeholder: |
-        # Configuracao do data-gen
-        generator: ecommerce
-        output: kafka
-        kafka_bootstrap_servers: localhost:9092
+        # Comando utilizado
+        python scripts/load_data.py --customers 10 --skip-postgres
+
+        # Ou configuração do producer
+        bootstrap.servers: localhost:9092
         ...
 
   - type: dropdown
@@ -125,7 +126,7 @@ body:
       label: Sistema Operacional
       options:
         - macOS (Intel)
-        - macOS (Apple Silicon M1/M2/M3)
+        - macOS (Apple Silicon M1/M2/M3/M4)
         - Ubuntu / Debian
         - Windows 10
         - Windows 11
@@ -136,7 +137,7 @@ body:
   - type: input
     id: python_version
     attributes:
-      label: Versao do Python
+      label: Versão do Python
       description: Output de `python --version`
       placeholder: "Python 3.11.0"
     validations:
@@ -145,8 +146,8 @@ body:
   - type: textarea
     id: additional
     attributes:
-      label: Informacoes adicionais
-      description: Screenshots, tentativas de solucao, ou qualquer outra informacao relevante
+      label: Informações adicionais
+      description: Screenshots, tentativas de solução, ou qualquer outra informação relevante
       placeholder: |
-        - Ja tentei...
+        - Já tentei...
         - Notei que...
