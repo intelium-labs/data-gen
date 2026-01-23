@@ -204,6 +204,7 @@ def load_to_kafka(
     bootstrap_servers: str,
     schema_registry_url: str | None,
     seed: int,
+    use_cloudevents: bool = True,
 ) -> None:
     """Generate and load event data to Kafka.
 
@@ -217,8 +218,14 @@ def load_to_kafka(
         Schema Registry URL (optional, for Avro serialization).
     seed : int
         Random seed for reproducibility.
+    use_cloudevents : bool
+        If True, include CloudEvents headers in messages (default: True).
     """
     logger.info("Loading event data to Kafka...")
+    if use_cloudevents:
+        logger.info("CloudEvents headers: ENABLED")
+    else:
+        logger.info("CloudEvents headers: DISABLED")
 
     # Initialize generators
     transaction_gen = TransactionGenerator(seed=seed)
@@ -230,7 +237,7 @@ def load_to_kafka(
         bootstrap_servers=bootstrap_servers,
         schema_registry_url=schema_registry_url,
     )
-    sink = KafkaSink(config)
+    sink = KafkaSink(config, use_cloudevents=use_cloudevents)
 
     try:
         # Generate and send transactions
@@ -392,6 +399,11 @@ def main() -> None:
         action="store_true",
         help="Truncate PostgreSQL tables before loading (allows re-running)",
     )
+    parser.add_argument(
+        "--no-cloudevents",
+        action="store_true",
+        help="Disable CloudEvents headers in Kafka messages",
+    )
 
     args = parser.parse_args()
 
@@ -425,6 +437,7 @@ def main() -> None:
             args.kafka_bootstrap,
             args.schema_registry,
             args.seed,
+            use_cloudevents=not args.no_cloudevents,
         )
 
     # Print summary

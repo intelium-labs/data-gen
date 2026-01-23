@@ -1,0 +1,152 @@
+name: Bug Report
+description: Reporte um problema no data-gen
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por reportar! Preencha as informacoes abaixo para nos ajudar a resolver o problema.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist antes de reportar
+      description: Verifique esses itens antes de abrir o bug report
+      options:
+        - label: Verifiquei se tenho Python 3.9+ instalado
+        - label: Instalei as dependencias com `pip install -r requirements.txt`
+        - label: Li o README e segui todos os passos
+        - label: Busquei por issues similares e nao encontrei
+
+  - type: dropdown
+    id: generator
+    attributes:
+      label: Qual gerador de dados?
+      description: Selecione o gerador com problema
+      options:
+        - ecommerce
+        - financial
+        - iot
+        - clickstream
+        - Todos / Geral
+        - Outro
+    validations:
+      required: true
+
+  - type: dropdown
+    id: output
+    attributes:
+      label: Tipo de output
+      description: Para onde esta enviando os dados?
+      options:
+        - Kafka
+        - Console / stdout
+        - Arquivo JSON
+        - Arquivo CSV
+        - Outro
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severidade
+      description: Qual o impacto do problema?
+      options:
+        - Bloqueante - Nao consigo usar o data-gen
+        - Alto - Funcionalidade importante nao funciona
+        - Medio - Funciona parcialmente ou com workaround
+        - Baixo - Problema menor ou cosmetico
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Descricao do problema
+      description: Descreva o que aconteceu
+      placeholder: |
+        O que aconteceu?
+        O que voce esperava que acontecesse?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Passos para reproduzir
+      description: Liste os passos exatos para reproduzir o problema
+      placeholder: |
+        1. Clone o repositorio
+        2. Execute `pip install -r requirements.txt`
+        3. Execute `python generate.py --type ecommerce`
+        4. ...
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento esperado
+      description: O que deveria acontecer?
+      placeholder: Descreva o que voce esperava que acontecesse
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs de erro
+      description: Cole a mensagem de erro ou stack trace
+      render: shell
+      placeholder: |
+        Cole aqui os logs ou erro...
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuracao utilizada
+      description: Cole sua configuracao (remova dados sensiveis)
+      render: yaml
+      placeholder: |
+        # Configuracao do data-gen
+        generator: ecommerce
+        output: kafka
+        kafka_bootstrap_servers: localhost:9092
+        ...
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Sistema Operacional
+      options:
+        - macOS (Intel)
+        - macOS (Apple Silicon M1/M2/M3)
+        - Ubuntu / Debian
+        - Windows 10
+        - Windows 11
+        - Outro Linux
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Versao do Python
+      description: Output de `python --version`
+      placeholder: "Python 3.11.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Informacoes adicionais
+      description: Screenshots, tentativas de solucao, ou qualquer outra informacao relevante
+      placeholder: |
+        - Ja tentei...
+        - Notei que...

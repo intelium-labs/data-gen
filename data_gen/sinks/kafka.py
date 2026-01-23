@@ -3,8 +3,9 @@
 import json
 import logging
 import time
+import uuid
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 
@@ -14,8 +15,27 @@ from confluent_kafka.serialization import SerializationContext, MessageField
 logger = logging.getLogger(__name__)
 
 # Constants
-SCHEMA_NAMESPACE = "com.datagen.banking"
+SCHEMA_NAMESPACE = "com.financial.banking"
 DEFAULT_SCHEMA_REGISTRY_URL = "http://localhost:8081"
+
+# CloudEvents configuration (Binary Content Mode)
+CLOUDEVENTS_SPEC_VERSION = "1.0"
+
+# Event type mapping (CloudEvents type attribute)
+EVENT_TYPES = {
+    "transactions": "com.financial.transaction.created.v1",
+    "card_transactions": "com.financial.card_transaction.created.v1",
+    "trades": "com.financial.trade.executed.v1",
+    "installments": "com.financial.installment.created.v1",
+}
+
+# Source URI mapping (CloudEvents source attribute)
+SOURCE_URIS = {
+    "transactions": "/financial/banking/transactions",
+    "card_transactions": "/financial/banking/cards",
+    "trades": "/financial/banking/investments",
+    "installments": "/financial/banking/loans",
+}
 
 # Avro schemas for each entity type
 AVRO_SCHEMAS = {
@@ -172,18 +192,25 @@ class KafkaSink:
         "banking.installments": "loan_id",
     }
 
-    def __init__(self, config: ProducerConfig | str) -> None:
+    def __init__(
+        self,
+        config: ProducerConfig | str,
+        use_cloudevents: bool = True,
+    ) -> None:
         """Initialize Kafka sink.
 
         Parameters
         ----------
         config : ProducerConfig | str
             Producer configuration or bootstrap servers string.
+        use_cloudevents : bool
+            If True, include CloudEvents headers in messages (default: True).
         """
         if isinstance(config, str):
             config = ProducerConfig(bootstrap_servers=config)
 
         self.config = config
+        self.use_cloudevents = use_cloudevents
         self.producer = self._create_producer()
         self.stats = ProducerStats()
         self._avro_serializers: dict[str, Any] = {}
@@ -191,6 +218,9 @@ class KafkaSink:
         # Initialize Avro serializers if Schema Registry is configured
         if config.schema_registry_url:
             self._init_avro_serializers()
+
+        if use_cloudevents:
+            logger.info("CloudEvents headers enabled (Binary Content Mode)")
 
     def _create_producer(self) -> Producer:
         """Create Kafka producer with configuration."""
@@ -288,6 +318,50 @@ class KafkaSink:
             return entity.replace("-", "_")
         return topic
 
+    def _build_cloudevent_headers(
+        self, topic: str, record: Any
+    ) -> list[tuple[str, bytes]]:
+        """Build CloudEvents headers for binary content mode.
+
+        Parameters
+        ----------
+        topic : str
+            Kafka topic name.
+        record : Any
+            The record being sent.
+
+        Returns
+        -------
+        list[tuple[str, bytes]]
+            List of header tuples (name, value) for Kafka.
+        """
+        entity_type = self._get_entity_type(topic)
+        event_type = EVENT_TYPES.get(
+            entity_type, f"com.financial.{entity_type}.created.v1"
+        )
+        source = SOURCE_URIS.get(
+            entity_type, f"/financial/banking/{entity_type}"
+        )
+        subject = self._get_key(topic, record)
+
+        # ISO 8601 timestamp with milliseconds
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+        headers = [
+            ("ce_specversion", CLOUDEVENTS_SPEC_VERSION.encode("utf-8")),
+            ("ce_type", event_type.encode("utf-8")),
+            ("ce_source", source.encode("utf-8")),
+            ("ce_id", str(uuid.uuid4()).encode("utf-8")),
+            ("ce_time", timestamp.encode("utf-8")),
+            ("content-type", b"application/json"),
+        ]
+
+        if subject:
+            headers.append(("ce_subject", subject.encode("utf-8")))
+
+        return headers
+
     def send(self, topic: str, record: Any, key: str | None = None) -> None:
         """Send a single record to Kafka topic."""
         entity_type = self._get_entity_type(topic)
@@ -306,10 +380,16 @@ class KafkaSink:
         if key is None:
             key = self._get_key(topic, record)
 
+        # Build CloudEvents headers if enabled
+        headers = None
+        if self.use_cloudevents:
+            headers = self._build_cloudevent_headers(topic, record)
+
         self.producer.produce(
             topic=topic,
             key=key.encode("utf-8") if key else None,
             value=value,
+            headers=headers,
             callback=self._delivery_callback,
         )
         self.stats.sent += 1

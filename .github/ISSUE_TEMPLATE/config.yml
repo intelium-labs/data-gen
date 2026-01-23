@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussoes Gerais
+    url: https://github.com/intelium-labs/kafka-fundamentals/discussions
+    about: Duvidas ou sugestoes sobre o data-gen
+  - name: Sugerir um Lab
+    url: https://github.com/intelium-labs/kafka-fundamentals/issues/new?template=lab_suggestion.yml
+    about: Sugira um novo lab para o Intelium Labs
+  - name: Site Intelium
+    url: https://intelium.ai
+    about: Visite nosso site para artigos e conteudo tecnico
