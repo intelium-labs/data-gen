@@ -1,41 +1,45 @@
 # Infraestrutura Docker
 
-Configurações Docker para o projeto data-gen, incluindo um deployment completo do Confluent Platform.
+Configurações Docker para o projeto data-gen, incluindo um deployment completo do Confluent Platform 8.1.1 em modo KRaft (sem Zookeeper).
 
-> **Docs relacionados**: [Ingestão de Dados](./data-ingestion.md) | [Catálogo de Dados](./data-catalog.md) | [Índice da Documentação](./README.md)
+> **Docs relacionados**: [Ingestão de Dados](./data-ingestion.md) | [Catálogo de Dados](./data-catalog.md) | [Setup no Windows](./windows-setup.md) | [Índice da Documentação](./README.md)
 
 ## Quick Start
 
 ```bash
 # Iniciar todos os serviços
-docker-compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # Verificar status
-docker-compose ps
+docker compose -f docker/docker-compose.yml ps
 
 # Parar serviços
-docker-compose down
+docker compose -f docker/docker-compose.yml down
 
 # Parar e remover volumes (começar do zero)
-docker-compose down -v
+docker compose -f docker/docker-compose.yml down -v
 ```
 
 ## Serviços
 
 | Serviço | Container | Porta | Descrição |
 |---------|-----------|-------|-----------|
-| Zookeeper | datagen-zookeeper | 2181 | Serviço de coordenação do Kafka |
-| Kafka Broker | datagen-broker | 9092, 29092 | Message broker |
+| Kafka Broker | datagen-broker | 9092, 29092 | Message broker (KRaft mode, `cp-server`) |
 | Schema Registry | datagen-schema-registry | 8081 | Gerenciamento de schemas Avro/JSON/Protobuf |
 | Kafka Connect | datagen-connect | 8083 | Framework de integração de dados |
-| Control Center | datagen-control-center | 9021 | Interface web para monitoramento |
+| Control Center | datagen-control-center | 9021 | Interface web para monitoramento (Next-Gen) |
+| Prometheus | datagen-prometheus | 9090 | Backend de métricas para Control Center |
+| Alertmanager | datagen-alertmanager | 9093 | Backend de alertas para Control Center |
 | ksqlDB | datagen-ksqldb-server | 8088 | Engine de SQL streaming |
 | REST Proxy | datagen-rest-proxy | 8082 | Interface HTTP para Kafka |
-| PostgreSQL | datagen-postgres | 5432 | Banco de dados para conectores JDBC |
+| PostgreSQL | datagen-postgres | 5432 | Banco de dados para dados mestres |
+
+> **Nota**: O Control Center Legacy é incompatível com CP 8.1.1 (`message.timestamp.difference.max.ms` removido). Usamos o **Control Center Next-Gen 2.2.1** com Prometheus + Alertmanager como sidecars. O broker usa a imagem `cp-server` (enterprise) para o TelemetryReporter necessário pelo C3.
 
 ## URLs de Acesso
 
 - **Control Center**: http://localhost:9021
+- **Prometheus**: http://localhost:9090
 - **Schema Registry API**: http://localhost:8081
 - **Kafka Connect API**: http://localhost:8083
 - **ksqlDB API**: http://localhost:8088
@@ -44,30 +48,118 @@ docker-compose down -v
 ## Arquitetura
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         datagen-network                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐           │
-│  │  Zookeeper   │◄────►│    Broker    │◄────►│   Schema     │           │
-│  │    :2181     │      │  :9092/29092 │      │  Registry    │           │
-│  └──────────────┘      └──────┬───────┘      │    :8081     │           │
-│                               │              └──────┬───────┘           │
-│                               │                     │                    │
-│         ┌─────────────────────┼─────────────────────┤                   │
-│         │                     │                     │                    │
-│         ▼                     ▼                     ▼                    │
-│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐           │
-│  │   Connect    │      │   ksqlDB     │      │  REST Proxy  │           │
-│  │    :8083     │      │    :8088     │      │    :8082     │           │
-│  └──────┬───────┘      └──────────────┘      └──────────────┘           │
-│         │                                                                │
-│         │              ┌──────────────┐      ┌──────────────┐           │
-│         └─────────────►│  PostgreSQL  │      │   Control    │           │
-│                        │    :5432     │      │   Center     │           │
-│                        └──────────────┘      │    :9021     │           │
-│                                              └──────────────┘           │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          datagen-network                                  │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────────────┐        │
+│  │    Broker    │◄────►│   Schema     │      │ Control Center   │        │
+│  │  (cp-server) │      │  Registry    │      │  Next-Gen :9021  │        │
+│  │ :9092/29092  │      │    :8081     │      └────────┬─────────┘        │
+│  └──────┬───────┘      └──────┬───────┘               │                  │
+│         │                     │                ┌───────┴───────┐          │
+│         │  OTLP metrics       │                │               │          │
+│         ├──────────────────►┌──┴───────────┐ ┌─┴────────────┐ │          │
+│         │                   │  Prometheus  │ │ Alertmanager │ │          │
+│         │                   │    :9090     │ │    :9093     │ │          │
+│         │                   └──────────────┘ └──────────────┘ │          │
+│         ├─────────────────────┤                                │          │
+│         │                     │                                │          │
+│         ▼                     ▼                                │          │
+│  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐│          │
+│  │   Connect    │      │   ksqlDB     │      │  REST Proxy  ││          │
+│  │    :8083     │      │    :8088     │      │    :8082     ││          │
+│  └──────┬───────┘      └──────────────┘      └──────────────┘│          │
+│         │                                                     │          │
+│         │              ┌──────────────┐                       │          │
+│         └─────────────►│  PostgreSQL  │                       │          │
+│                        │    :5432     │                       │          │
+│                        └──────────────┘                       │          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+## Perfis de Inicialização
+
+Nem sempre é necessário iniciar todos os serviços. Escolha o perfil adequado:
+
+### Mínimo (Kafka + Postgres)
+
+Para ingestão de dados com `load_data.py`:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d broker schema-registry postgres
+```
+
+### Monitoramento
+
+Adicione Control Center para visualizar brokers, tópicos, schemas e consumidores:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d broker schema-registry postgres prometheus alertmanager control-center
+```
+
+### Completo
+
+Todos os serviços, incluindo Connect, ksqlDB e REST Proxy:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+## Limpeza de Containers
+
+### Parar serviços (manter dados)
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+### Parar e remover volumes (reset total)
+
+Remove todos os dados do Kafka, PostgreSQL e plugins do Connect:
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+```
+
+### Remover containers, volumes e imagens
+
+Limpeza completa, incluindo imagens baixadas:
+
+```bash
+docker compose -f docker/docker-compose.yml down -v --rmi all
+```
+
+### Remover apenas dados do PostgreSQL
+
+```bash
+docker compose -f docker/docker-compose.yml stop postgres
+docker volume rm docker_postgres-data
+docker compose -f docker/docker-compose.yml up -d postgres
+```
+
+### Remover apenas dados do Kafka
+
+```bash
+docker compose -f docker/docker-compose.yml stop broker
+docker volume rm docker_broker-data
+docker compose -f docker/docker-compose.yml up -d broker
+```
+
+### Limpar tudo (containers + rede + cache)
+
+Script de limpeza completa:
+
+```bash
+# Parar tudo, remover volumes e rede
+docker compose -f docker/docker-compose.yml down -v
+docker network rm datagen-network 2>/dev/null || true
+
+# Opcional: remover imagens do Confluent Platform
+docker images | grep confluentinc | awk '{print $3}' | xargs -r docker rmi
+
+# Verificar que está limpo
+docker ps -a --filter "name=datagen-" --format "{{.Names}}"
 ```
 
 ## Kafka Connect
@@ -78,10 +170,10 @@ O container do Connect instala automaticamente estes conectores na inicializaç�
 
 | Conector | Versão | Caso de Uso |
 |----------|--------|-------------|
-| JDBC Source/Sink | 10.7.4 | Integração com banco de dados |
-| Debezium PostgreSQL | 2.4.0 | CDC (Change Data Capture) |
-| Elasticsearch | 14.0.12 | Indexação de busca |
-| JSON Schema Converter | 7.5.0 | Suporte a JSON schema |
+| JDBC Source/Sink | 10.7.6 | Integração com banco de dados |
+| Debezium PostgreSQL | 2.5.0 | CDC (Change Data Capture) |
+| Elasticsearch | 14.1.0 | Indexação de busca |
+| JSON Schema Converter | 7.9.5 | Suporte a JSON schema |
 
 ### Listar Plugins Instalados
 
@@ -104,7 +196,7 @@ curl -X POST http://localhost:8083/connectors \
       "connection.password": "postgres",
       "topic.prefix": "db-",
       "mode": "incrementing",
-      "incrementing.column.name": "id",
+      "incrementing.column.name": "incremental_id",
       "poll.interval.ms": "1000"
     }
   }'
@@ -131,17 +223,6 @@ curl -X DELETE http://localhost:8083/connectors/postgres-source
 
 ## Schema Registry
 
-### Registrar um Schema
-
-```bash
-# Registrar schema Avro
-curl -X POST http://localhost:8081/subjects/customers-value/versions \
-  -H "Content-Type: application/vnd.schemaregistry.v1+json" \
-  -d '{
-    "schema": "{\"type\":\"record\",\"name\":\"Customer\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"name\",\"type\":\"string\"}]}"
-  }'
-```
-
 ### Listar Schemas
 
 ```bash
@@ -149,7 +230,7 @@ curl -X POST http://localhost:8081/subjects/customers-value/versions \
 curl -s http://localhost:8081/subjects | jq
 
 # Obter schema para subject
-curl -s http://localhost:8081/subjects/customers-value/versions/latest | jq
+curl -s http://localhost:8081/subjects/banking.transactions-value/versions/latest | jq
 
 # Obter schema por ID
 curl -s http://localhost:8081/schemas/ids/1 | jq
@@ -162,7 +243,7 @@ curl -s http://localhost:8081/schemas/ids/1 | jq
 curl -s http://localhost:8081/config | jq
 
 # Definir compatibilidade para subject
-curl -X PUT http://localhost:8081/config/customers-value \
+curl -X PUT http://localhost:8081/config/banking.transactions-value \
   -H "Content-Type: application/vnd.schemaregistry.v1+json" \
   -d '{"compatibility": "BACKWARD"}'
 ```
@@ -175,7 +256,7 @@ curl -X PUT http://localhost:8081/config/customers-value \
 docker exec datagen-broker kafka-topics \
   --bootstrap-server localhost:9092 \
   --create \
-  --topic customers \
+  --topic banking.transactions \
   --partitions 3 \
   --replication-factor 1
 ```
@@ -188,46 +269,31 @@ docker exec datagen-broker kafka-topics \
   --list
 ```
 
-### Descrever Tópico
+### Verificar Offsets (contagem de mensagens)
 
 ```bash
-docker exec datagen-broker kafka-topics \
+docker exec datagen-broker kafka-get-offsets \
   --bootstrap-server localhost:9092 \
-  --describe \
-  --topic customers
-```
-
-### Produzir Mensagens
-
-```bash
-# Mensagens string
-docker exec -it datagen-broker kafka-console-producer \
-  --bootstrap-server localhost:9092 \
-  --topic customers
-
-# Com chave
-docker exec -it datagen-broker kafka-console-producer \
-  --bootstrap-server localhost:9092 \
-  --topic customers \
-  --property "parse.key=true" \
-  --property "key.separator=:"
+  --topic-partitions banking.transactions:0,banking.transactions:1,banking.transactions:2
 ```
 
 ### Consumir Mensagens
 
 ```bash
-# Desde o início
+# Desde o início (primeiras 5 mensagens)
 docker exec datagen-broker kafka-console-consumer \
   --bootstrap-server localhost:9092 \
-  --topic customers \
-  --from-beginning
-
-# Com chave
-docker exec datagen-broker kafka-console-consumer \
-  --bootstrap-server localhost:9092 \
-  --topic customers \
+  --topic banking.transactions \
   --from-beginning \
-  --property "print.key=true"
+  --max-messages 5
+
+# Últimas mensagens de uma partição específica
+docker exec datagen-broker kafka-console-consumer \
+  --bootstrap-server localhost:9092 \
+  --topic banking.transactions \
+  --partition 0 \
+  --offset latest \
+  --max-messages 1
 ```
 
 ## ksqlDB
@@ -244,26 +310,30 @@ docker exec -it datagen-ksqldb-server ksql http://localhost:8088
 -- Mostrar tópicos
 SHOW TOPICS;
 
--- Criar stream a partir de tópico
-CREATE STREAM customers_stream (
-  customer_id VARCHAR KEY,
-  name VARCHAR,
-  email VARCHAR,
-  credit_score INT
+-- Criar stream a partir de tópico de transações
+CREATE STREAM transactions_stream (
+  transaction_id VARCHAR,
+  account_id VARCHAR KEY,
+  transaction_type VARCHAR,
+  amount DOUBLE,
+  direction VARCHAR,
+  timestamp VARCHAR,
+  status VARCHAR
 ) WITH (
-  KAFKA_TOPIC='customers',
+  KAFKA_TOPIC='banking.transactions',
   VALUE_FORMAT='JSON'
 );
 
--- Consultar stream
-SELECT * FROM customers_stream EMIT CHANGES;
+-- Consultar stream em tempo real
+SELECT * FROM transactions_stream EMIT CHANGES;
 
--- Criar tabela com agregação
-CREATE TABLE customer_count AS
-  SELECT credit_score,
-         COUNT(*) AS total
-  FROM customers_stream
-  GROUP BY credit_score
+-- Agregação: total por tipo de transação
+CREATE TABLE transaction_totals AS
+  SELECT transaction_type,
+         COUNT(*) AS total_count,
+         SUM(amount) AS total_amount
+  FROM transactions_stream
+  GROUP BY transaction_type
   EMIT CHANGES;
 ```
 
@@ -285,11 +355,16 @@ docker exec -it datagen-postgres psql -U postgres -d datagen
 | Usuário | postgres |
 | Senha | postgres |
 
-### URL JDBC
+### URL de Conexão
 
 ```
+# Python (psycopg)
+postgresql://postgres:postgres@localhost:5432/datagen
+
+# JDBC (Kafka Connect)
 jdbc:postgresql://localhost:5432/datagen
-# Dentro da rede Docker:
+
+# Dentro da rede Docker
 jdbc:postgresql://postgres:5432/datagen
 ```
 
@@ -299,12 +374,12 @@ jdbc:postgresql://postgres:5432/datagen
 
 ```bash
 # Todos os serviços
-docker-compose ps
+docker compose -f docker/docker-compose.yml ps
 
 # Logs de serviço específico
-docker-compose logs -f broker
-docker-compose logs -f connect
-docker-compose logs -f schema-registry
+docker compose -f docker/docker-compose.yml logs -f broker
+docker compose -f docker/docker-compose.yml logs -f connect
+docker compose -f docker/docker-compose.yml logs -f schema-registry
 ```
 
 ### Problemas Comuns
@@ -312,10 +387,10 @@ docker-compose logs -f schema-registry
 #### Broker Não Iniciando
 
 ```bash
-# Verificar se Zookeeper está saudável primeiro
-docker-compose logs zookeeper
+# Verificar logs do broker (KRaft mode)
+docker compose -f docker/docker-compose.yml logs broker
 
-# Verificar conexão com Zookeeper
+# Verificar conectividade
 docker exec datagen-broker kafka-broker-api-versions \
   --bootstrap-server localhost:9092
 ```
@@ -342,45 +417,32 @@ docker logs datagen-schema-registry 2>&1 | grep -i "error"
 
 #### Falta de Memória
 
-Aumente a alocação de memória do Docker para pelo menos 8GB para a stack completa.
+Aumente a alocação de memória do Docker para pelo menos 6GB para a stack completa.
 
 ```bash
 # Verificar uso atual de recursos
-docker stats
-```
-
-### Resetar Tudo
-
-```bash
-# Parar e remover todos os containers e volumes
-docker-compose down -v
-
-# Remover rede
-docker network rm datagen-network 2>/dev/null || true
-
-# Iniciar do zero
-docker-compose up -d
+docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 ```
 
 ## Requisitos de Recursos
 
-| Perfil | Memória | CPU | Caso de Uso |
-|--------|---------|-----|-------------|
-| Mínimo | 4GB | 2 cores | Desenvolvimento (Zookeeper, Broker, Schema Registry) |
-| Padrão | 6GB | 4 cores | + Connect, ksqlDB |
-| Completo | 8GB+ | 4+ cores | + Control Center, REST Proxy |
+| Perfil | Memória | CPU | Serviços |
+|--------|---------|-----|----------|
+| Mínimo | 3GB | 2 cores | Broker, Schema Registry, PostgreSQL |
+| Monitoramento | 5GB | 4 cores | + Prometheus, Alertmanager, Control Center |
+| Completo | 6GB+ | 4+ cores | + Connect, ksqlDB, REST Proxy |
 
 ## Variáveis de Ambiente
 
-Principais opções de configuração que podem ser customizadas:
-
-### Broker
+### Broker (KRaft mode)
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
-| `KAFKA_BROKER_ID` | 1 | Identificador único do broker |
+| `KAFKA_NODE_ID` | 1 | Identificador único do nó |
+| `KAFKA_PROCESS_ROLES` | broker,controller | Papéis KRaft do nó |
 | `KAFKA_AUTO_CREATE_TOPICS_ENABLE` | true | Auto-criar tópicos |
 | `KAFKA_LOG_RETENTION_HOURS` | 168 | Retenção de logs (7 dias) |
+| `CLUSTER_ID` | MkU3OEVBNTcwNTJENDM2Qk | ID do cluster KRaft |
 
 ### Connect
 
@@ -396,12 +458,48 @@ Principais opções de configuração que podem ser customizadas:
 |----------|--------|-----------|
 | `SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL` | BACKWARD | Compatibilidade padrão |
 
+### PostgreSQL
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `POSTGRES_USER` | postgres | Usuário do banco |
+| `POSTGRES_PASSWORD` | postgres | Senha do banco |
+| `POSTGRES_DB` | datagen | Nome do banco de dados |
+
+O PostgreSQL está configurado com flags de performance para bulk loading:
+
+| Flag | Valor | Descrição |
+|------|-------|-----------|
+| `shared_buffers` | 256MB | Memória para cache de páginas |
+| `work_mem` | 64MB | Memória por operação de sort |
+| `maintenance_work_mem` | 128MB | Memória para VACUUM, CREATE INDEX |
+| `max_wal_size` | 1GB | WAL antes de checkpoint |
+| `synchronous_commit` | off | Commits assíncronos (mais rápido) |
+| `fsync` | off | Sem sync em disco (mais rápido, seguro em Docker) |
+| `full_page_writes` | off | Sem backup de páginas (seguro com fsync=off) |
+| `checkpoint_timeout` | 1800s | 30min entre checkpoints |
+
+> **Aviso**: `fsync=off` e `full_page_writes=off` são seguros em containers de desenvolvimento. **Nunca use em produção** — pode causar perda de dados em crash.
+
+### Control Center Next-Gen
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `CONTROL_CENTER_PROMETHEUS_ENABLE` | true | Habilita backend Prometheus |
+| `CONTROL_CENTER_PROMETHEUS_URL` | http://prometheus:9090 | URL do Prometheus |
+| `CONTROL_CENTER_ALERTMANAGER_URL` | http://alertmanager:9093 | URL do Alertmanager |
+| `PORT` | 9021 | Porta HTTP do Control Center |
+
+Configurações do C3 ficam em `docker/config/`:
+- `prometheus-generated.yml` — scraping, OTLP, storage
+- `recording_rules-generated.yml` — pre-agregações para dashboards
+- `trigger_rules-generated.yml` — regras de alerta
+- `alertmanager-generated.yml` — configuração de notificações
+
 ## Volumes
 
 | Volume | Serviço | Propósito |
 |--------|---------|-----------|
-| `zookeeper-data` | Zookeeper | Dados do Zookeeper |
-| `zookeeper-logs` | Zookeeper | Logs do Zookeeper |
 | `broker-data` | Broker | Logs do Kafka |
 | `connect-plugins` | Connect | JARs de conectores |
 | `postgres-data` | PostgreSQL | Arquivos do banco de dados |

@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from data_gen.models.base import Address
+from data_gen.models.financial.enums import EmploymentStatus
 
 
 @dataclass
@@ -18,7 +19,8 @@ class Customer:
     phone: str
     address: Address
     monthly_income: Decimal
-    employment_status: str  # EMPLOYED, SELF_EMPLOYED, RETIRED, UNEMPLOYED
+    employment_status: EmploymentStatus
     credit_score: int  # 300-850 (like Serasa)
     created_at: datetime
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing

@@ -1,6 +1,7 @@
 """Configuration management for data-gen."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,22 @@ class StreamConfig:
 
 
 @dataclass
+class ScenarioConfig:
+    """Configuration for scenario execution."""
+
+    name: str
+    num_customers: int = 100
+    transactions_per_customer: int = 50
+    start_date: datetime | None = None
+    end_date: datetime | None = None
+    enable_fraud_patterns: bool = False
+    fraud_rate: float = 0.05
+    enable_poison_pills: bool = False
+    poison_pill_rate: float = 0.01
+    labels: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class DataGenConfig:
     """Main configuration for data-gen."""
 
@@ -69,12 +86,15 @@ class DataGenConfig:
     postgres: PostgresConfig = field(default_factory=PostgresConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    scenario: ScenarioConfig | None = None
     seed: int | None = None
     log_level: str = "INFO"
+    country_weights: dict[str, float] | None = None
 
     @classmethod
     def from_env(cls) -> "DataGenConfig":
         """Create config from environment variables."""
+        import json
         import os
 
         kafka = KafkaConfig(
@@ -101,6 +121,9 @@ class DataGenConfig:
             topic_prefix=os.getenv("TOPIC_PREFIX", "dev.financial"),
         )
 
+        country_weights_str = os.getenv("COUNTRY_WEIGHTS")
+        country_weights = json.loads(country_weights_str) if country_weights_str else None
+
         return cls(
             kafka=kafka,
             postgres=postgres,
@@ -108,4 +131,5 @@ class DataGenConfig:
             stream=stream,
             seed=int(os.getenv("SEED")) if os.getenv("SEED") else None,
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            country_weights=country_weights,
         )

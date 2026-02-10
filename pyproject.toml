@@ -12,8 +12,9 @@ keywords = ["synthetic-data", "faker", "kafka", "banking", "brazil"]
 
 dependencies = [
     "faker>=24.0.0",
-    "confluent-kafka>=2.3.0",
+    "confluent-kafka[avro]>=2.3.0",
     "psycopg[binary]>=3.1.0",
+    "tqdm>=4.65.0",
 ]
 
 [project.optional-dependencies]
@@ -23,9 +24,6 @@ dev = [
     "ruff>=0.2.0",
     "mypy>=1.8.0",
     "black>=24.0.0",
-]
-avro = [
-    "fastavro>=1.9.0",
 ]
 
 [build-system]

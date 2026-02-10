@@ -6,14 +6,22 @@ from datetime import datetime
 
 @dataclass
 class Address:
-    """Brazilian address."""
+    """Physical address supporting multiple countries.
+
+    Fields are general enough to represent addresses worldwide:
+    - street/number: street address
+    - neighborhood: bairro (BR), district, borough, etc.
+    - state: state/province/county abbreviation or name
+    - postal_code: ZIP/CEP/postcode in country-specific format
+    - country: ISO 3166-1 alpha-2 code (default: ``"BR"``)
+    """
 
     street: str
     number: str
     neighborhood: str
     city: str
-    state: str  # 2-letter code (SP, RJ, etc.)
-    postal_code: str  # CEP format: XXXXX-XXX
+    state: str
+    postal_code: str
     complement: str = ""
     country: str = "BR"
 

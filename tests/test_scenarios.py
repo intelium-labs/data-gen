@@ -2,6 +2,7 @@
 
 import pytest
 
+from data_gen.config import ScenarioConfig
 from data_gen.scenarios.financial import (
     Customer360Scenario,
     FraudDetectionScenario,
@@ -210,3 +211,72 @@ class TestCustomer360Scenario:
         assert summary["total_customers"] == 5
         assert summary["total_accounts"] >= 5
         assert "avg_credit_score" in summary
+
+
+class TestScenarioConfigIntegration:
+    """Tests for scenarios using ScenarioConfig."""
+
+    def test_fraud_detection_with_config(self, seed: int) -> None:
+        """Test FraudDetectionScenario with ScenarioConfig."""
+        config = ScenarioConfig(
+            name="fraud_detection",
+            num_customers=8,
+            transactions_per_customer=5,
+            enable_fraud_patterns=True,
+            fraud_rate=0.15,
+        )
+        scenario = FraudDetectionScenario(seed=seed, config=config)
+
+        assert scenario.num_customers == 8
+        assert scenario.transactions_per_customer == 5
+        assert scenario.fraud_rate == 0.15
+        assert scenario.config is config
+
+        store = scenario.generate()
+        assert len(store.customers) == 8
+
+    def test_loan_portfolio_with_config(self, seed: int) -> None:
+        """Test LoanPortfolioScenario with ScenarioConfig."""
+        config = ScenarioConfig(
+            name="loan_portfolio",
+            num_customers=15,
+        )
+        scenario = LoanPortfolioScenario(
+            loan_penetration=0.50, seed=seed, config=config
+        )
+
+        assert scenario.num_customers == 15
+        assert scenario.config is config
+
+        store = scenario.generate()
+        assert len(store.customers) == 15
+
+    def test_customer_360_with_config(self, seed: int) -> None:
+        """Test Customer360Scenario with ScenarioConfig."""
+        config = ScenarioConfig(
+            name="customer_360",
+            num_customers=6,
+            transactions_per_customer=10,
+        )
+        scenario = Customer360Scenario(seed=seed, config=config)
+
+        assert scenario.num_customers == 6
+        assert scenario.transactions_per_account == 10
+        assert scenario.config is config
+
+        store = scenario.generate()
+        assert len(store.customers) == 6
+
+    def test_scenarios_without_config_unchanged(self, seed: int) -> None:
+        """Test that scenarios work unchanged without config parameter."""
+        scenario = FraudDetectionScenario(
+            num_customers=5,
+            transactions_per_customer=3,
+            fraud_rate=0.05,
+            seed=seed,
+        )
+        assert scenario.config is None
+        assert scenario.num_customers == 5
+
+        store = scenario.generate()
+        assert len(store.customers) == 5

@@ -1,10 +1,9 @@
 """Console sink for debugging and development."""
 
 import json
-from dataclasses import asdict, is_dataclass
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any, Iterator
+
+from data_gen.sinks.serialization import to_dict
 
 
 class ConsoleSink:
@@ -33,7 +32,7 @@ class ConsoleSink:
         display_records = records[: self.max_records] if self.max_records else records
 
         for record in display_records:
-            data = self._to_dict(record)
+            data = to_dict(record)
             if self.pretty:
                 print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
             else:
@@ -67,7 +66,7 @@ class ConsoleSink:
             if time.time() - start_time >= duration_seconds:
                 break
 
-            data = self._to_dict(record)
+            data = to_dict(record)
             if self.pretty:
                 print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
             else:
@@ -88,32 +87,3 @@ class ConsoleSink:
         for entity_type, count in self._counts.items():
             print(f"  {entity_type}: {count} records")
 
-    def _to_dict(self, obj: Any) -> dict:
-        """Convert object to dictionary."""
-        if is_dataclass(obj):
-            return self._dataclass_to_dict(obj)
-        elif isinstance(obj, dict):
-            return obj
-        else:
-            return {"value": str(obj)}
-
-    def _dataclass_to_dict(self, obj: Any) -> dict:
-        """Convert dataclass to dict with proper serialization."""
-        result = {}
-        for key, value in asdict(obj).items():
-            result[key] = self._serialize_value(value)
-        return result
-
-    def _serialize_value(self, value: Any) -> Any:
-        """Serialize a value for JSON output."""
-        if isinstance(value, Decimal):
-            return float(value)
-        elif isinstance(value, datetime):
-            return value.isoformat()
-        elif isinstance(value, date):
-            return value.isoformat()
-        elif isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
-        elif isinstance(value, list):
-            return [self._serialize_value(v) for v in value]
-        return value

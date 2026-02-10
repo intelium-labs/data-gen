@@ -5,12 +5,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.financial import Account
+from data_gen.models.financial.enums import AccountStatus, AccountType
 
 
-class AccountGenerator:
+class AccountGenerator(BaseGenerator):
     """Generate synthetic bank accounts.
 
     Brazilian account types:
@@ -19,7 +19,7 @@ class AccountGenerator:
     - INVESTIMENTOS: Investment account (~10%)
     """
 
-    ACCOUNT_TYPES = ["CONTA_CORRENTE", "POUPANCA", "INVESTIMENTOS"]
+    ACCOUNT_TYPES = list(AccountType)
     ACCOUNT_TYPE_WEIGHTS = [0.70, 0.20, 0.10]
 
     BANK_CODES = {
@@ -34,10 +34,7 @@ class AccountGenerator:
     }
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate(self, customer_id: str) -> Account:
         """Generate a single account for a customer.
@@ -78,8 +75,8 @@ class AccountGenerator:
             )[0]
 
             # Don't generate duplicate types usually
-            if i > 0 and account_type == "CONTA_CORRENTE":
-                account_type = random.choice(["POUPANCA", "INVESTIMENTOS"])
+            if i > 0 and account_type == AccountType.CONTA_CORRENTE:
+                account_type = random.choice([AccountType.POUPANCA, AccountType.INVESTIMENTOS])
 
             yield self._generate_one(
                 customer_id, customer_created_at, monthly_income, account_type
@@ -90,15 +87,16 @@ class AccountGenerator:
         customer_id: str,
         customer_created_at: datetime,
         monthly_income: Decimal,
-        account_type: str,
+        account_type: AccountType,
     ) -> Account:
         """Generate a single account."""
         bank_code = random.choice(list(self.BANK_CODES.keys()))
 
         # Balance based on income (0.5 to 3x monthly income typically)
-        balance_multiplier = random.uniform(0.1, 3.0)
-        balance = float(monthly_income) * balance_multiplier
-        balance = max(0, balance + random.gauss(0, float(monthly_income) * 0.3))
+        balance_multiplier = Decimal(str(round(random.uniform(0.1, 3.0), 4)))
+        noise = Decimal(str(round(random.gauss(0, float(monthly_income) * 0.3), 2)))
+        balance = monthly_income * balance_multiplier + noise
+        balance = max(Decimal("0"), balance)
 
         # Account created same day or after customer
         days_after = random.randint(0, 30)
@@ -113,7 +111,7 @@ class AccountGenerator:
             bank_code=bank_code,
             branch=f"{random.randint(1, 9999):04d}",
             account_number=f"{random.randint(1, 999999):06d}-{random.randint(0, 9)}",
-            balance=Decimal(str(round(balance, 2))),
-            status="ACTIVE",
+            balance=balance.quantize(Decimal("0.01")),
+            status=AccountStatus.ACTIVE,
             created_at=created_at,
         )

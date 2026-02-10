@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - 'recording_rules-generated.yml'
+  - 'trigger_rules-generated.yml'
+
+scrape_configs:
+
+otlp:
+  promote_resource_attributes: ["host.hostname", "java.version", "kafka.broker.id", "kafka.cluster.id", "kafka.version", "type"]
+
+storage:
+  tsdb:
+    out_of_order_time_window: 10m

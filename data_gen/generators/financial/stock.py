@@ -5,12 +5,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.financial import Stock, Trade
+from data_gen.models.financial.enums import OrderType, StockSector, StockSegment, TradeStatus, TradeType
 
 
-class StockGenerator:
+class StockGenerator(BaseGenerator):
     """Generate synthetic B3 stocks.
 
     Generates realistic Brazilian stocks with proper tickers,
@@ -74,14 +74,11 @@ class StockGenerator:
         {"ticker": "GOLL4", "company": "Gol", "sector": "TRANSPORTATION", "price_range": (5, 12)},
     ]
 
-    SEGMENTS = ["NOVO_MERCADO", "N1", "N2", "TRADICIONAL"]
+    SEGMENTS = list(StockSegment)
     SEGMENT_WEIGHTS = [0.50, 0.20, 0.15, 0.15]
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate(self, stock_data: dict | None = None) -> Stock:
         """Generate a single B3 stock.
@@ -111,7 +108,7 @@ class StockGenerator:
             stock_id=self.fake.uuid4(),
             ticker=stock_data["ticker"],
             company_name=stock_data["company"],
-            sector=stock_data["sector"],
+            sector=StockSector(stock_data["sector"]),
             segment=segment,
             current_price=Decimal(str(current_price)),
             currency="BRL",
@@ -151,17 +148,17 @@ class StockGenerator:
         return stocks
 
 
-class TradeGenerator:
+class TradeGenerator(BaseGenerator):
     """Generate synthetic stock trades.
 
     Generates realistic trade data including fees, settlement dates,
     and order types based on B3 market patterns.
     """
 
-    ORDER_TYPES = ["MARKET", "LIMIT", "STOP"]
+    ORDER_TYPES = list(OrderType)
     ORDER_TYPE_WEIGHTS = [0.50, 0.40, 0.10]
 
-    TRADE_TYPES = ["BUY", "SELL"]
+    TRADE_TYPES = list(TradeType)
 
     # Fee structure (approximate B3 fees)
     BROKERAGE_FEE_PCT = Decimal("0.0005")  # 0.05% typical discount broker
@@ -169,16 +166,13 @@ class TradeGenerator:
     B3_SETTLEMENT_PCT = Decimal("0.0000275")  # 0.00275%
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate(
         self,
         account_id: str,
         stock: Stock,
-        trade_type: str | None = None,
+        trade_type: TradeType | None = None,
         executed_at: datetime | None = None,
     ) -> Trade:
         """Generate a single trade.
@@ -228,7 +222,7 @@ class TradeGenerator:
         fees = (brokerage + emoluments + settlement).quantize(Decimal("0.01"))
 
         # Net amount (buy: pay more, sell: receive less)
-        if trade_type == "BUY":
+        if trade_type == TradeType.BUY:
             net_amount = total_amount + fees
         else:
             net_amount = total_amount - fees
@@ -250,7 +244,7 @@ class TradeGenerator:
             fees=fees,
             net_amount=net_amount.quantize(Decimal("0.01")),
             order_type=order_type,
-            status="EXECUTED",
+            status=TradeStatus.EXECUTED,
             executed_at=executed_at,
             settlement_date=settlement_date,
         )

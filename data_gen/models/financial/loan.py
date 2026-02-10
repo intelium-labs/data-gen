@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from data_gen.models.financial.enums import (
+    AmortizationSystem,
+    InstallmentStatus,
+    LoanStatus,
+    LoanType,
+)
+
 
 @dataclass
 class Loan:
@@ -11,15 +18,16 @@ class Loan:
 
     loan_id: str
     customer_id: str
-    loan_type: str  # PERSONAL, HOUSING, VEHICLE
+    loan_type: LoanType
     principal: Decimal  # Amount borrowed
     interest_rate: Decimal  # Monthly rate (e.g., 0.015 for 1.5%)
     term_months: int
-    amortization_system: str  # SAC, PRICE
-    status: str  # PENDING, APPROVED, REJECTED, ACTIVE, PAID_OFF, DEFAULT
+    amortization_system: AmortizationSystem
+    status: LoanStatus
     disbursement_date: date | None
     property_id: str | None  # For housing finance
     created_at: datetime
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing
 
 
@@ -36,6 +44,7 @@ class Installment:
     total_amount: Decimal
     paid_date: date | None
     paid_amount: Decimal | None
-    status: str  # PENDING, PAID, LATE, DEFAULT
+    status: InstallmentStatus
     created_at: datetime | None = None  # Record creation timestamp
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing

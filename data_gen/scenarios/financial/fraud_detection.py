@@ -1,9 +1,12 @@
 """Fraud detection scenario for generating transactions with fraud patterns."""
 
+from __future__ import annotations
+
 import logging
 import random
 from typing import Any
 
+from data_gen.config import ScenarioConfig
 from data_gen.generators.financial import (
     AccountGenerator,
     CustomerGenerator,
@@ -34,6 +37,8 @@ class FraudDetectionScenario:
         transactions_per_customer: int = 50,
         fraud_rate: float = 0.02,
         seed: int | None = None,
+        *,
+        config: ScenarioConfig | None = None,
     ) -> None:
         """Initialize fraud detection scenario.
 
@@ -47,11 +52,22 @@ class FraudDetectionScenario:
             Percentage of transactions that are fraudulent (0.0 to 1.0).
         seed : int | None
             Random seed for reproducibility.
+        config : ScenarioConfig | None
+            Optional scenario configuration. If provided, overrides
+            num_customers, transactions_per_customer, and fraud_rate.
         """
-        self.num_customers = num_customers
-        self.transactions_per_customer = transactions_per_customer
-        self.fraud_rate = fraud_rate
-        self.seed = seed
+        if config is not None:
+            self.num_customers = config.num_customers
+            self.transactions_per_customer = config.transactions_per_customer
+            self.fraud_rate = config.fraud_rate
+            self.seed = seed
+            self.config = config
+        else:
+            self.num_customers = num_customers
+            self.transactions_per_customer = transactions_per_customer
+            self.fraud_rate = fraud_rate
+            self.seed = seed
+            self.config = None
 
         if seed is not None:
             random.seed(seed)

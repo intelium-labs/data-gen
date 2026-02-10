@@ -4,13 +4,16 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Iterator
 
 from confluent_kafka import Producer
 from confluent_kafka.serialization import SerializationContext, MessageField
+
+from data_gen.sinks.serialization import to_dict, to_dict_fast
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "pix_e2e_id", "type": ["null", "string"], "default": None},
             {"name": "pix_key_type", "type": ["null", "string"], "default": None},
+            {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
     "card_transactions": {
@@ -74,6 +78,7 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "location_city", "type": ["null", "string"], "default": None},
             {"name": "location_country", "type": ["null", "string"], "default": None},
+            {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
     "trades": {
@@ -95,6 +100,7 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "executed_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
             {"name": "settlement_date", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+            {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
     "installments": {
@@ -112,6 +118,7 @@ AVRO_SCHEMAS = {
             {"name": "paid_date", "type": ["null", {"type": "int", "logicalType": "date"}], "default": None},
             {"name": "paid_amount", "type": ["null", {"type": "bytes", "logicalType": "decimal", "precision": 15, "scale": 2}], "default": None},
             {"name": "status", "type": "string"},
+            {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
 }
@@ -128,6 +135,9 @@ class ProducerConfig:
     linger_ms: int = 5  # ms to wait for batching
     compression: str = "snappy"  # none, gzip, snappy, lz4
     retries: int = 3
+    enable_idempotence: bool = False
+    queue_buffering_max_messages: int = 100000
+    queue_buffering_max_kbytes: int = 1048576  # 1GB
 
 
 # Configuration presets
@@ -137,6 +147,7 @@ RELIABLE = ProducerConfig(
     acks="all",
     batch_size=16384,
     linger_ms=5,
+    enable_idempotence=True,
 )
 
 FAST = ProducerConfig(
@@ -153,6 +164,17 @@ EVENT_BY_EVENT = ProducerConfig(
     acks="all",
     batch_size=1,
     linger_ms=0,
+)
+
+BULK = ProducerConfig(
+    bootstrap_servers="localhost:9092",
+    schema_registry_url=DEFAULT_SCHEMA_REGISTRY_URL,
+    acks="1",
+    batch_size=524288,  # 512KB
+    linger_ms=100,
+    compression="lz4",
+    queue_buffering_max_messages=500000,
+    queue_buffering_max_kbytes=2097152,  # 2GB
 )
 
 
@@ -196,6 +218,7 @@ class KafkaSink:
         self,
         config: ProducerConfig | str,
         use_cloudevents: bool = True,
+        poll_interval: int = 10000,
     ) -> None:
         """Initialize Kafka sink.
 
@@ -205,6 +228,10 @@ class KafkaSink:
             Producer configuration or bootstrap servers string.
         use_cloudevents : bool
             If True, include CloudEvents headers in messages (default: True).
+        poll_interval : int
+            Poll the producer every N messages instead of every message.
+            Lower values = more responsive delivery callbacks.
+            Higher values = better throughput (default: 10000).
         """
         if isinstance(config, str):
             config = ProducerConfig(bootstrap_servers=config)
@@ -214,6 +241,10 @@ class KafkaSink:
         self.producer = self._create_producer()
         self.stats = ProducerStats()
         self._avro_serializers: dict[str, Any] = {}
+        self._poll_interval = poll_interval
+        self._since_last_poll = 0
+        self._avro_field_cache: dict[str, set[str]] = {}
+        self._entity_type_cache: dict[str, str | None] = {}
 
         # Initialize Avro serializers if Schema Registry is configured
         if config.schema_registry_url:
@@ -224,16 +255,19 @@ class KafkaSink:
 
     def _create_producer(self) -> Producer:
         """Create Kafka producer with configuration."""
-        return Producer(
-            {
-                "bootstrap.servers": self.config.bootstrap_servers,
-                "acks": self.config.acks,
-                "retries": self.config.retries,
-                "linger.ms": self.config.linger_ms,
-                "batch.size": self.config.batch_size,
-                "compression.type": self.config.compression,
-            }
-        )
+        conf: dict[str, Any] = {
+            "bootstrap.servers": self.config.bootstrap_servers,
+            "acks": self.config.acks,
+            "retries": self.config.retries,
+            "linger.ms": self.config.linger_ms,
+            "batch.size": self.config.batch_size,
+            "compression.type": self.config.compression,
+            "queue.buffering.max.messages": self.config.queue_buffering_max_messages,
+            "queue.buffering.max.kbytes": self.config.queue_buffering_max_kbytes,
+        }
+        if self.config.enable_idempotence:
+            conf["enable.idempotence"] = True
+        return Producer(conf)
 
     def _init_avro_serializers(self) -> None:
         """Initialize Avro serializers for each entity type."""
@@ -252,6 +286,10 @@ class KafkaSink:
                     schema_str,
                     to_dict=self._to_avro_dict,
                 )
+                # Pre-cache the field set for O(1) lookup during serialization
+                self._avro_field_cache[entity_type] = {
+                    f["name"] for f in schema["fields"]
+                }
             logger.info("Avro serializers initialized for: %s", list(AVRO_SCHEMAS.keys()))
         except ImportError:
             logger.warning(
@@ -259,34 +297,57 @@ class KafkaSink:
                 "Install with: pip install 'confluent-kafka[avro]'"
             )
 
-    def _to_avro_dict(self, obj: Any, ctx: SerializationContext) -> dict:
-        """Convert object to Avro-compatible dict."""
-        if is_dataclass(obj):
-            data = asdict(obj)
-        elif isinstance(obj, dict):
-            data = obj
-        else:
-            raise ValueError(f"Cannot convert {type(obj)} to Avro dict")
+    @staticmethod
+    def _convert_avro_value(value: Any) -> Any:
+        """Convert a single Python value to Avro-compatible form."""
+        if isinstance(value, Decimal):
+            scaled = int(value * 100)
+            byte_length = max(1, (scaled.bit_length() + 8) // 8)
+            return scaled.to_bytes(byte_length, byteorder='big', signed=True)
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, datetime):
+            return int(value.timestamp() * 1000)
+        if isinstance(value, date):
+            return (value - date(1970, 1, 1)).days
+        return value
 
-        # Convert types for Avro
-        result = {}
-        for key, value in data.items():
-            if isinstance(value, Decimal):
-                # Avro decimal - convert to scaled integer bytes
-                # For precision=15, scale=2: multiply by 100 and encode as big-endian bytes
-                scaled = int(value * 100)
-                # Calculate minimum bytes needed (at least 1 byte)
-                byte_length = max(1, (scaled.bit_length() + 8) // 8)
-                result[key] = scaled.to_bytes(byte_length, byteorder='big', signed=True)
-            elif isinstance(value, datetime):
-                # Avro timestamp-millis
-                result[key] = int(value.timestamp() * 1000)
-            elif isinstance(value, date):
-                # Avro date (days since epoch)
-                result[key] = (value - date(1970, 1, 1)).days
-            else:
-                result[key] = value
-        return result
+    def _to_avro_dict(self, obj: Any, ctx: SerializationContext) -> dict:
+        """Convert object to Avro-compatible dict.
+
+        Only includes fields defined in the Avro schema for the entity type.
+        Handles Enum, Decimal, datetime and date conversions.
+        Uses fields()+getattr() instead of asdict() to avoid deep copy.
+        """
+        convert = self._convert_avro_value
+        schema_fields = self._get_avro_fields_cached(ctx)
+
+        if is_dataclass(obj):
+            if schema_fields is not None:
+                return {
+                    f.name: convert(getattr(obj, f.name))
+                    for f in fields(obj)
+                    if f.name in schema_fields
+                }
+            return {f.name: convert(getattr(obj, f.name)) for f in fields(obj)}
+
+        if isinstance(obj, dict):
+            if schema_fields is not None:
+                return {
+                    k: convert(v) for k, v in obj.items() if k in schema_fields
+                }
+            return {k: convert(v) for k, v in obj.items()}
+
+        raise ValueError(f"Cannot convert {type(obj)} to Avro dict")
+
+    def _get_avro_fields_cached(self, ctx: SerializationContext | None) -> set[str] | None:
+        """Return cached set of field names for the Avro schema, or None."""
+        if not ctx or not ctx.topic:
+            return None
+        entity_type = self._get_entity_type(ctx.topic)
+        if not entity_type:
+            return None
+        return self._avro_field_cache.get(entity_type)
 
     def _delivery_callback(self, err: Any, msg: Any) -> None:
         """Handle delivery reports."""
@@ -310,13 +371,18 @@ class KafkaSink:
         return None
 
     def _get_entity_type(self, topic: str) -> str | None:
-        """Extract entity type from topic name."""
+        """Extract entity type from topic name (cached)."""
+        cached = self._entity_type_cache.get(topic)
+        if cached is not None:
+            return cached
         # banking.transactions -> transactions
         # banking.card-transactions -> card_transactions
         if "." in topic:
-            entity = topic.split(".")[-1]
-            return entity.replace("-", "_")
-        return topic
+            entity = topic.split(".")[-1].replace("-", "_")
+        else:
+            entity = topic
+        self._entity_type_cache[topic] = entity
+        return entity
 
     def _build_cloudevent_headers(
         self, topic: str, record: Any
@@ -372,8 +438,11 @@ class KafkaSink:
             ctx = SerializationContext(topic, MessageField.VALUE)
             value = serializer(record, ctx)
         else:
-            # Fall back to JSON
-            data = self._to_dict(record)
+            # Fall back to JSON — use fast path for flat event dataclasses
+            if is_dataclass(record) and entity_type in AVRO_SCHEMAS:
+                data = to_dict_fast(record)
+            else:
+                data = to_dict(record)
             value = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
 
         # Extract key if not provided
@@ -385,15 +454,25 @@ class KafkaSink:
         if self.use_cloudevents:
             headers = self._build_cloudevent_headers(topic, record)
 
-        self.producer.produce(
-            topic=topic,
-            key=key.encode("utf-8") if key else None,
-            value=value,
-            headers=headers,
-            callback=self._delivery_callback,
-        )
+        produce_kwargs = {
+            "topic": topic,
+            "key": key.encode("utf-8") if key else None,
+            "value": value,
+            "headers": headers,
+            "callback": self._delivery_callback,
+        }
+        try:
+            self.producer.produce(**produce_kwargs)
+        except BufferError:
+            # Internal queue full — drain delivery callbacks and retry once
+            self.producer.poll(1.0)
+            self.producer.produce(**produce_kwargs)
+
         self.stats.sent += 1
-        self.producer.poll(0)
+        self._since_last_poll += 1
+        if self._since_last_poll >= self._poll_interval:
+            self.producer.poll(0)
+            self._since_last_poll = 0
 
     def write_batch(self, topic: str, records: list[Any]) -> None:
         """Write a batch of records to a Kafka topic."""
@@ -472,11 +551,21 @@ class KafkaSink:
 
     def flush(self, timeout: float = 30.0) -> None:
         """Flush pending messages."""
-        self.producer.flush(timeout)
+        remaining = self.producer.flush(timeout)
+        if remaining > 0:
+            logger.warning(
+                "Flush timeout: %d messages still in queue after %.0fs",
+                remaining, timeout,
+            )
 
     def close(self) -> None:
-        """Flush and close the producer."""
-        self.flush()
+        """Flush and close the producer.
+
+        Uses a scaled timeout: 30s base + 1s per 10K messages sent,
+        capped at 300s. This prevents silent data loss on large loads.
+        """
+        timeout = min(300.0, 30.0 + self.stats.sent / 10000)
+        self.flush(timeout)
         logger.info(
             "Kafka sink closed: sent=%d, delivered=%d, failed=%d",
             self.stats.sent,
@@ -484,32 +573,3 @@ class KafkaSink:
             self.stats.failed,
         )
 
-    def _to_dict(self, obj: Any) -> dict:
-        """Convert object to dictionary."""
-        if is_dataclass(obj):
-            return self._dataclass_to_dict(obj)
-        elif isinstance(obj, dict):
-            return obj
-        else:
-            return {"value": str(obj)}
-
-    def _dataclass_to_dict(self, obj: Any) -> dict:
-        """Convert dataclass to dict with proper serialization."""
-        result = {}
-        for key, value in asdict(obj).items():
-            result[key] = self._serialize_value(value)
-        return result
-
-    def _serialize_value(self, value: Any) -> Any:
-        """Serialize a value for JSON output."""
-        if isinstance(value, Decimal):
-            return float(value)
-        elif isinstance(value, datetime):
-            return value.isoformat()
-        elif isinstance(value, date):
-            return value.isoformat()
-        elif isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
-        elif isinstance(value, list):
-            return [self._serialize_value(v) for v in value]
-        return value

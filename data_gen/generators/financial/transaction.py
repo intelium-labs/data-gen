@@ -5,25 +5,22 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.financial import Account, Transaction
+from data_gen.models.financial.enums import Direction, PixKeyType, TransactionStatus, TransactionType
 from data_gen.store.financial import FinancialDataStore
 
 
-class TransactionGenerator:
+class TransactionGenerator(BaseGenerator):
     """Generate synthetic bank transactions."""
 
-    TRANSACTION_TYPES = ["PIX", "TED", "DOC", "WITHDRAW", "DEPOSIT", "BOLETO"]
+    TRANSACTION_TYPES = list(TransactionType)
     TRANSACTION_WEIGHTS = [0.50, 0.10, 0.05, 0.15, 0.10, 0.10]
 
-    PIX_KEY_TYPES = ["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]
+    PIX_KEY_TYPES = list(PixKeyType)
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate(self, account_id: str) -> Transaction:
         """Generate a single transaction for an account.
@@ -41,12 +38,12 @@ class TransactionGenerator:
         tx_type = random.choices(self.TRANSACTION_TYPES, weights=self.TRANSACTION_WEIGHTS, k=1)[0]
 
         # Determine direction based on type
-        if tx_type in ["WITHDRAW", "BOLETO"]:
-            direction = "DEBIT"
-        elif tx_type == "DEPOSIT":
-            direction = "CREDIT"
+        if tx_type in (TransactionType.WITHDRAW, TransactionType.BOLETO):
+            direction = Direction.DEBIT
+        elif tx_type == TransactionType.DEPOSIT:
+            direction = Direction.CREDIT
         else:
-            direction = random.choice(["CREDIT", "DEBIT"])
+            direction = random.choice(list(Direction))
 
         # Amount based on Pareto distribution
         amount = random.paretovariate(1.5) * 50
@@ -59,12 +56,12 @@ class TransactionGenerator:
         pix_e2e_id = None
         pix_key_type = None
 
-        if tx_type == "PIX":
+        if tx_type == TransactionType.PIX:
             pix_key_type = random.choice(self.PIX_KEY_TYPES)
             counterparty_key = self._generate_pix_key(pix_key_type)
             counterparty_name = self.fake.name()
             pix_e2e_id = self._generate_e2e_id()
-        elif tx_type in ["TED", "DOC"]:
+        elif tx_type in (TransactionType.TED, TransactionType.DOC):
             counterparty_key = f"{random.randint(1, 999):03d}/{random.randint(1, 9999):04d}/{random.randint(1, 999999):06d}-{random.randint(0, 9)}"
             counterparty_name = self.fake.name()
 
@@ -84,7 +81,7 @@ class TransactionGenerator:
                 hours=random.randint(0, 23),
                 minutes=random.randint(0, 59),
             ),
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
             pix_e2e_id=pix_e2e_id,
             pix_key_type=pix_key_type,
         )
@@ -114,9 +111,9 @@ class TransactionGenerator:
         return Transaction(
             transaction_id=self.fake.uuid4(),
             account_id=account_id,
-            transaction_type="PIX",
+            transaction_type=TransactionType.PIX,
             amount=Decimal(str(amount)),
-            direction=random.choice(["CREDIT", "DEBIT"]),
+            direction=random.choice(list(Direction)),
             counterparty_key=counterparty_key,
             counterparty_name=counterparty_name,
             description=f"Pix para {counterparty_name}",
@@ -125,7 +122,7 @@ class TransactionGenerator:
                 hours=random.randint(0, 23),
                 minutes=random.randint(0, 59),
             ),
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
             pix_e2e_id=pix_e2e_id,
             pix_key_type=pix_key_type,
         )
@@ -167,12 +164,12 @@ class TransactionGenerator:
         tx_type = random.choices(self.TRANSACTION_TYPES, weights=self.TRANSACTION_WEIGHTS, k=1)[0]
 
         # Determine direction based on type
-        if tx_type in ["WITHDRAW", "BOLETO"]:
-            direction = "DEBIT"
-        elif tx_type == "DEPOSIT":
-            direction = "CREDIT"
+        if tx_type in (TransactionType.WITHDRAW, TransactionType.BOLETO):
+            direction = Direction.DEBIT
+        elif tx_type == TransactionType.DEPOSIT:
+            direction = Direction.CREDIT
         else:
-            direction = random.choice(["CREDIT", "DEBIT"])
+            direction = random.choice(list(Direction))
 
         # Amount based on Pareto distribution (many small, few large)
         amount = random.paretovariate(1.5) * 50
@@ -185,12 +182,12 @@ class TransactionGenerator:
         pix_e2e_id = None
         pix_key_type = None
 
-        if tx_type == "PIX":
+        if tx_type == TransactionType.PIX:
             pix_key_type = random.choice(self.PIX_KEY_TYPES)
             counterparty_key = self._generate_pix_key(pix_key_type)
             counterparty_name = self.fake.name()
             pix_e2e_id = self._generate_e2e_id()
-        elif tx_type in ["TED", "DOC"]:
+        elif tx_type in (TransactionType.TED, TransactionType.DOC):
             # Use another account from store if available
             other_account = store.get_random_account()
             if other_account and other_account.account_id != account.account_id:
@@ -211,7 +208,7 @@ class TransactionGenerator:
             counterparty_name=counterparty_name,
             description=description,
             timestamp=timestamp,
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
             pix_e2e_id=pix_e2e_id,
             pix_key_type=pix_key_type,
         )
@@ -225,15 +222,15 @@ class TransactionGenerator:
             # 30% other hours
             return random.choice(list(range(0, 8)) + list(range(19, 24)))
 
-    def _generate_pix_key(self, key_type: str) -> str:
+    def _generate_pix_key(self, key_type: PixKeyType) -> str:
         """Generate a Pix key based on type."""
-        if key_type == "CPF":
+        if key_type == PixKeyType.CPF:
             return self.fake.cpf().replace(".", "").replace("-", "")
-        elif key_type == "CNPJ":
+        elif key_type == PixKeyType.CNPJ:
             return self.fake.cnpj().replace(".", "").replace("/", "").replace("-", "")
-        elif key_type == "EMAIL":
+        elif key_type == PixKeyType.EMAIL:
             return self.fake.email()
-        elif key_type == "PHONE":
+        elif key_type == PixKeyType.PHONE:
             return "+55" + self.fake.msisdn()[2:]
         else:  # EVP
             return self.fake.uuid4()
@@ -247,18 +244,18 @@ class TransactionGenerator:
         seq = "".join(random.choices(string.ascii_uppercase + string.digits, k=10))
         return f"E{ispb}{timestamp}{seq}"
 
-    def _generate_description(self, tx_type: str, counterparty_name: str | None) -> str:
+    def _generate_description(self, tx_type: TransactionType, counterparty_name: str | None) -> str:
         """Generate transaction description."""
-        if tx_type == "PIX":
+        if tx_type == TransactionType.PIX:
             return f"Pix para {counterparty_name}" if counterparty_name else "Pix"
-        elif tx_type == "TED":
+        elif tx_type == TransactionType.TED:
             return f"TED para {counterparty_name}" if counterparty_name else "TED"
-        elif tx_type == "DOC":
+        elif tx_type == TransactionType.DOC:
             return f"DOC para {counterparty_name}" if counterparty_name else "DOC"
-        elif tx_type == "WITHDRAW":
+        elif tx_type == TransactionType.WITHDRAW:
             return "Saque ATM"
-        elif tx_type == "DEPOSIT":
+        elif tx_type == TransactionType.DEPOSIT:
             return "Depósito"
-        elif tx_type == "BOLETO":
+        elif tx_type == TransactionType.BOLETO:
             return f"Pagamento boleto - {self.fake.company()}"
         return ""

@@ -9,6 +9,8 @@ Bem-vindo à documentação do `data-gen`. Este gerador de dados sintéticos sim
 | [Catálogo de Dados](./data-catalog.md) | Referência completa de todos os datasets, campos, tipos e lógica de geração |
 | [Ingestão de Dados](./data-ingestion.md) | Como carregar dados no PostgreSQL e Kafka |
 | [Infraestrutura Docker](./docker.md) | Setup do Confluent Platform e configuração |
+| [Setup no Windows](./windows-setup.md) | Guia completo para rodar no Windows com Docker Desktop e WSL2 |
+| [Roadmap v2](./roadmap-v2.md) | Poison pills, padrões realistas, novos produtos e interface TUI |
 
 ## Links Rápidos
 
@@ -16,17 +18,23 @@ Bem-vindo à documentação do `data-gen`. Este gerador de dados sintéticos sim
 
 ```bash
 # 1. Iniciar infraestrutura
-cd docker/
-docker-compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # 2. Instalar dependências
 pip install -e ".[dev]"
 
-# 3. Carregar dados de exemplo
-python3 scripts/load_data.py --customers 100
+# 3. Carregar dados de exemplo (PostgreSQL + Kafka)
+.venv/bin/python scripts/load_data.py --customers 100 --seed 42 --create-topics
 
-# 4. Verificar dados
+# 4. Verificar dados no PostgreSQL
 docker exec datagen-postgres psql -U postgres -d datagen -c "SELECT count(*) FROM customers;"
+
+# 5. Verificar dados no Kafka
+docker exec datagen-broker kafka-get-offsets --bootstrap-server localhost:9092 \
+  --topic-partitions banking.transactions:0,banking.transactions:1,banking.transactions:2
+
+# 6. Limpar tudo quando terminar
+docker compose -f docker/docker-compose.yml down -v
 ```
 
 ### Visão Geral da Arquitetura
@@ -80,6 +88,19 @@ docker exec datagen-postgres psql -U postgres -d datagen -c "SELECT count(*) FRO
 | **Evento** | CardTransaction | Kafka | Compras no cartão de crédito |
 | **Evento** | Trade | Kafka | Ordens de compra/venda de ações |
 | **Evento** | Installment | Kafka | Eventos de pagamento de parcelas |
+
+### Relacionamentos entre Sistemas
+
+Dados mestres no PostgreSQL são referenciados por eventos no Kafka através de chaves estrangeiras:
+
+| Evento (Kafka) | FK | Entidade Mestre (PostgreSQL) |
+|---|---|---|
+| `banking.transactions` | `account_id` | `accounts` |
+| `banking.card-transactions` | `card_id` | `credit_cards` |
+| `banking.trades` | `account_id`, `stock_id` | `accounts`, `stocks` |
+| `banking.installments` | `loan_id` | `loans` |
+
+A integridade é garantida pelo `FinancialDataStore` que valida todas as FKs em memória antes de enviar para qualquer destino. Veja [Catálogo de Dados](./data-catalog.md#relacionamentos-entre-sistemas) para detalhes.
 
 ## Convenções da Documentação
 

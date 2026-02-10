@@ -1,9 +1,10 @@
 """PostgreSQL sink for exporting data to database."""
 
 import logging
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,12 @@ class PostgresSink:
             "city",
             "state",
             "postal_code",
+            "country",
             "monthly_income",
             "employment_status",
             "credit_score",
             "created_at",
+            "updated_at",
         ],
         "accounts": [
             "account_id",
@@ -52,6 +55,7 @@ class PostgresSink:
             "balance",
             "status",
             "created_at",
+            "updated_at",
         ],
         "transactions": [
             "transaction_id",
@@ -67,6 +71,7 @@ class PostgresSink:
             "pix_e2e_id",
             "pix_key_type",
             "created_at",
+            "updated_at",
         ],
         "credit_cards": [
             "card_id",
@@ -78,6 +83,7 @@ class PostgresSink:
             "due_day",
             "status",
             "created_at",
+            "updated_at",
         ],
         "card_transactions": [
             "transaction_id",
@@ -92,6 +98,7 @@ class PostgresSink:
             "location_city",
             "location_country",
             "created_at",
+            "updated_at",
         ],
         "loans": [
             "loan_id",
@@ -105,6 +112,7 @@ class PostgresSink:
             "disbursement_date",
             "property_id",
             "created_at",
+            "updated_at",
         ],
         "installments": [
             "installment_id",
@@ -118,6 +126,7 @@ class PostgresSink:
             "paid_amount",
             "status",
             "created_at",
+            "updated_at",
         ],
         "properties": [
             "property_id",
@@ -129,10 +138,12 @@ class PostgresSink:
             "city",
             "state",
             "postal_code",
+            "country",
             "appraised_value",
             "area_sqm",
             "registration_number",
             "created_at",
+            "updated_at",
         ],
         "stocks": [
             "stock_id",
@@ -145,6 +156,7 @@ class PostgresSink:
             "isin",
             "lot_size",
             "created_at",
+            "updated_at",
         ],
     }
 
@@ -166,8 +178,20 @@ class PostgresSink:
 
         self._counts: dict[str, int] = {}
 
-    def write_batch(self, entity_type: str, records: list[Any]) -> None:
-        """Write a batch of records to PostgreSQL."""
+    def write_batch(
+        self, entity_type: str, records: list[Any], use_copy: bool = False
+    ) -> None:
+        """Write a batch of records to PostgreSQL.
+
+        Parameters
+        ----------
+        entity_type : str
+            Table/entity name.
+        records : list[Any]
+            Records to insert.
+        use_copy : bool
+            If True, use COPY protocol for faster bulk loading (default: False).
+        """
         if not records:
             return
 
@@ -176,26 +200,73 @@ class PostgresSink:
             return
 
         columns = self.TABLE_COLUMNS[entity_type]
-        table_name = entity_type
 
-        # Prepare data
-        rows = []
-        for record in records:
-            row = self._extract_row(record, columns, entity_type)
-            rows.append(row)
+        if use_copy:
+            # Stream rows directly to COPY — no intermediate list
+            self._write_copy_stream(entity_type, columns, records)
+        else:
+            rows = [self._extract_row(r, columns, entity_type) for r in records]
+            self._write_executemany(entity_type, columns, rows)
 
-        # Build INSERT statement
-        placeholders = ", ".join(["%s"] * len(columns))
-        column_names = ", ".join(columns)
-        sql = f"INSERT INTO {table_name} ({column_names}) VALUES ({placeholders})"
+        self._counts[entity_type] = self._counts.get(entity_type, 0) + len(records)
+        logger.info("Inserted %d records into %s", len(records), entity_type)
 
-        # Execute batch insert
+    def _write_executemany(
+        self, table_name: str, columns: list[str], rows: list[tuple]
+    ) -> None:
+        """Insert rows using executemany (standard method)."""
+        sql = self._psycopg.sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            self._psycopg.sql.Identifier(table_name),
+            self._psycopg.sql.SQL(", ").join(
+                self._psycopg.sql.Identifier(col) for col in columns
+            ),
+            self._psycopg.sql.SQL(", ").join(
+                self._psycopg.sql.Placeholder() for _ in columns
+            ),
+        )
         with self.conn.cursor() as cur:
             cur.executemany(sql, rows)
         self.conn.commit()
 
-        self._counts[entity_type] = self._counts.get(entity_type, 0) + len(records)
-        logger.info("Inserted %d records into %s", len(records), table_name)
+    def _write_copy(
+        self, table_name: str, columns: list[str], rows: list[tuple]
+    ) -> None:
+        """Insert pre-extracted rows using COPY protocol."""
+        col_ids = self._psycopg.sql.SQL(", ").join(
+            self._psycopg.sql.Identifier(col) for col in columns
+        )
+        copy_sql = self._psycopg.sql.SQL(
+            "COPY {} ({}) FROM STDIN"
+        ).format(
+            self._psycopg.sql.Identifier(table_name),
+            col_ids,
+        )
+
+        with self.conn.cursor() as cur:
+            with cur.copy(copy_sql) as copy:
+                for row in rows:
+                    copy.write_row(row)
+        self.conn.commit()
+
+    def _write_copy_stream(
+        self, table_name: str, columns: list[str], records: list[Any]
+    ) -> None:
+        """Stream records directly to COPY without intermediate list."""
+        col_ids = self._psycopg.sql.SQL(", ").join(
+            self._psycopg.sql.Identifier(col) for col in columns
+        )
+        copy_sql = self._psycopg.sql.SQL(
+            "COPY {} ({}) FROM STDIN"
+        ).format(
+            self._psycopg.sql.Identifier(table_name),
+            col_ids,
+        )
+
+        with self.conn.cursor() as cur:
+            with cur.copy(copy_sql) as copy:
+                for record in records:
+                    copy.write_row(self._extract_row(record, columns, table_name))
+        self.conn.commit()
 
     def write_stream(
         self,
@@ -261,7 +332,11 @@ class PostgresSink:
         ]
         with self.conn.cursor() as cur:
             for table in truncate_order:
-                cur.execute(f"TRUNCATE TABLE {table} CASCADE")
+                cur.execute(
+                    self._psycopg.sql.SQL("TRUNCATE TABLE {} CASCADE").format(
+                        self._psycopg.sql.Identifier(table)
+                    )
+                )
         self.conn.commit()
         logger.info("All tables truncated")
 
@@ -280,12 +355,14 @@ class PostgresSink:
             complement VARCHAR(100),
             neighborhood VARCHAR(100),
             city VARCHAR(100),
-            state VARCHAR(2),
-            postal_code VARCHAR(10),
+            state VARCHAR(50),
+            postal_code VARCHAR(20),
+            country VARCHAR(2) DEFAULT 'BR',
             monthly_income DECIMAL(15,2),
             employment_status VARCHAR(20),
             credit_score INTEGER,
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS properties (
@@ -297,12 +374,14 @@ class PostgresSink:
             complement VARCHAR(100),
             neighborhood VARCHAR(100),
             city VARCHAR(100),
-            state VARCHAR(2),
-            postal_code VARCHAR(10),
+            state VARCHAR(50),
+            postal_code VARCHAR(20),
+            country VARCHAR(2) DEFAULT 'BR',
             appraised_value DECIMAL(15,2),
             area_sqm DECIMAL(10,2),
             registration_number VARCHAR(50),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS stocks (
@@ -316,7 +395,8 @@ class PostgresSink:
             currency VARCHAR(3) DEFAULT 'BRL',
             isin VARCHAR(20),
             lot_size INTEGER DEFAULT 100,
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS accounts (
@@ -329,7 +409,8 @@ class PostgresSink:
             account_number VARCHAR(20),
             balance DECIMAL(15,2),
             status VARCHAR(20),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS credit_cards (
@@ -342,7 +423,8 @@ class PostgresSink:
             available_limit DECIMAL(15,2),
             due_day INTEGER,
             status VARCHAR(20),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS loans (
@@ -357,7 +439,8 @@ class PostgresSink:
             status VARCHAR(20),
             disbursement_date DATE,
             property_id VARCHAR(36) REFERENCES properties(property_id),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
@@ -374,7 +457,8 @@ class PostgresSink:
             status VARCHAR(20),
             pix_e2e_id VARCHAR(50),
             pix_key_type VARCHAR(20),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS card_transactions (
@@ -390,7 +474,8 @@ class PostgresSink:
             status VARCHAR(20),
             location_city VARCHAR(100),
             location_country VARCHAR(10),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS installments (
@@ -405,7 +490,8 @@ class PostgresSink:
             paid_date DATE,
             paid_amount DECIMAL(15,2),
             status VARCHAR(20),
-            created_at TIMESTAMP
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
         );
         """
         with self.conn.cursor() as cur:
@@ -413,30 +499,60 @@ class PostgresSink:
         self.conn.commit()
         logger.info("Database tables created")
 
-    def _extract_row(self, record: Any, columns: list[str], entity_type: str) -> tuple:
-        """Extract row values from a record."""
-        if is_dataclass(record):
-            data = asdict(record)
-        elif isinstance(record, dict):
-            data = record
-        else:
-            raise ValueError(f"Unsupported record type: {type(record)}")
+    def disable_constraints(self) -> None:
+        """Disable FK constraints for bulk loading.
 
-        # Flatten nested address for customers and properties
+        Uses session_replication_role = replica to skip FK checks and triggers.
+        Call ``enable_constraints()`` after loading to re-enable.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute("SET session_replication_role = replica")
+        self.conn.commit()
+        logger.info("FK constraints disabled (session_replication_role = replica)")
+
+    def enable_constraints(self) -> None:
+        """Re-enable FK constraints after bulk loading."""
+        with self.conn.cursor() as cur:
+            cur.execute("SET session_replication_role = DEFAULT")
+        self.conn.commit()
+        logger.info("FK constraints re-enabled (session_replication_role = DEFAULT)")
+
+    @staticmethod
+    def _flatten_dataclass(record: Any) -> dict[str, Any]:
+        """Convert a dataclass to a flat dict, inlining nested Address."""
+        data: dict[str, Any] = {}
+        for f in fields(record):
+            val = getattr(record, f.name)
+            if f.name == "address" and is_dataclass(val):
+                for af in fields(val):
+                    data[af.name] = getattr(val, af.name)
+            else:
+                data[f.name] = val
+        return data
+
+    @staticmethod
+    def _flatten_dict(data: dict, entity_type: str) -> dict:
+        """Flatten nested address in dict records for customers/properties."""
         if entity_type in ("customers", "properties") and "address" in data:
             address = data.pop("address", {})
             data.update(address)
+        return data
 
-        values = []
-        for col in columns:
-            value = data.get(col)
-            # Convert types
-            if isinstance(value, Decimal):
-                value = float(value)
-            elif isinstance(value, datetime):
-                value = value
-            elif isinstance(value, date):
-                value = value
-            values.append(value)
+    def _extract_row(self, record: Any, columns: list[str], entity_type: str) -> tuple:
+        """Extract row values from a record.
 
-        return tuple(values)
+        Uses direct attribute access instead of ``asdict()`` to avoid
+        deep recursive copies (2-3x faster for dataclasses with nested objects).
+        """
+        if is_dataclass(record):
+            data = self._flatten_dataclass(record)
+        elif isinstance(record, dict):
+            data = self._flatten_dict(record, entity_type)
+        else:
+            raise ValueError(f"Unsupported record type: {type(record)}")
+
+        return tuple(
+            v.value if isinstance(v, Enum) else v
+            for col in columns
+            for v in (data.get(col),)
+        )

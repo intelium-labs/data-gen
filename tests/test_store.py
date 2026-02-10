@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from data_gen.exceptions import InvalidEntityStateError, ReferentialIntegrityError
 from data_gen.models.base import Address
 from data_gen.models.financial import (
     Account,
@@ -18,7 +19,7 @@ from data_gen.models.financial import (
     Trade,
     Transaction,
 )
-from data_gen.store.financial import FinancialDataStore
+from data_gen.store.financial import FinancialDataStore, MasterDataStore
 
 
 @pytest.fixture
@@ -145,7 +146,7 @@ class TestFinancialDataStoreAccount:
         self, store: FinancialDataStore, sample_account: Account
     ) -> None:
         """Test that adding account without customer raises error."""
-        with pytest.raises(ValueError, match="Customer .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
             store.add_account(sample_account)
 
     def test_get_customer_accounts(
@@ -216,7 +217,7 @@ class TestFinancialDataStoreCreditCard:
             created_at=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="Customer .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
             store.add_credit_card(card)
 
     def test_get_customer_cards(self, store: FinancialDataStore, sample_customer: Customer) -> None:
@@ -318,7 +319,7 @@ class TestFinancialDataStoreLoan:
             created_at=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="Customer .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
             store.add_loan(loan)
 
     def test_add_loan_with_missing_property_fails(
@@ -341,7 +342,7 @@ class TestFinancialDataStoreLoan:
             created_at=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="Property .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Property .* not found"):
             store.add_loan(loan)
 
     def test_get_customer_loans(self, store: FinancialDataStore, sample_customer: Customer) -> None:
@@ -425,7 +426,7 @@ class TestFinancialDataStoreTransaction:
             status="COMPLETED",
         )
 
-        with pytest.raises(ValueError, match="Account .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Account .* not found"):
             store.add_transaction(tx)
 
     def test_get_account_transactions(
@@ -515,7 +516,7 @@ class TestFinancialDataStoreCardTransaction:
             location_country="BR",
         )
 
-        with pytest.raises(ValueError, match="Credit card .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Credit card .* not found"):
             store.add_card_transaction(card_tx)
 
     def test_get_card_transactions(
@@ -618,7 +619,7 @@ class TestFinancialDataStoreInstallment:
             status="PENDING",
         )
 
-        with pytest.raises(ValueError, match="Loan .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Loan .* not found"):
             store.add_installment(installment)
 
     def test_get_loan_installments(
@@ -943,7 +944,7 @@ class TestFinancialDataStoreTrade:
             settlement_date=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="Account .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Account .* not found"):
             store.add_trade(trade)
 
     def test_add_trade_without_stock_fails(
@@ -982,7 +983,7 @@ class TestFinancialDataStoreTrade:
             settlement_date=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="Stock .* not found"):
+        with pytest.raises(ReferentialIntegrityError, match="Stock .* not found"):
             store.add_trade(trade)
 
     def test_add_trade_non_investment_account_fails(
@@ -1036,7 +1037,7 @@ class TestFinancialDataStoreTrade:
             settlement_date=datetime.now(),
         )
 
-        with pytest.raises(ValueError, match="not an investment account"):
+        with pytest.raises(InvalidEntityStateError, match="not an investment account"):
             store.add_trade(trade)
 
     def test_get_account_trades(
@@ -1098,3 +1099,594 @@ class TestFinancialDataStoreTrade:
         """Test getting trades for non-existent account."""
         trades = store.get_account_trades("non-existent")
         assert trades == []
+
+
+# ---------------------------------------------------------------------------
+# MasterDataStore Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def master_store() -> MasterDataStore:
+    """Create a fresh MasterDataStore for each test."""
+    return MasterDataStore()
+
+
+class TestMasterDataStoreCustomer:
+    """Tests for MasterDataStore customer operations."""
+
+    def test_add_customer(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test adding a customer initializes relationship indexes."""
+        master_store.add_customer(sample_customer)
+
+        assert sample_customer.customer_id in master_store.customers
+        assert master_store.customers[sample_customer.customer_id] == sample_customer
+        assert sample_customer.customer_id in master_store._customer_accounts
+        assert sample_customer.customer_id in master_store._customer_cards
+        assert sample_customer.customer_id in master_store._customer_loans
+
+
+class TestMasterDataStoreAccount:
+    """Tests for MasterDataStore account operations."""
+
+    def test_add_account(
+        self, master_store: MasterDataStore, sample_customer: Customer, sample_account: Account
+    ) -> None:
+        """Test adding an account with FK validation."""
+        master_store.add_customer(sample_customer)
+        master_store.add_account(sample_account)
+
+        assert sample_account.account_id in master_store.accounts
+        assert sample_account.account_id in master_store._customer_accounts[sample_customer.customer_id]
+
+    def test_add_account_without_customer_fails(
+        self, master_store: MasterDataStore, sample_account: Account
+    ) -> None:
+        """Test that adding account without customer raises error."""
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
+            master_store.add_account(sample_account)
+
+    def test_add_account_invalidates_cache(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test that adding an account clears the accounts cache."""
+        master_store.add_customer(sample_customer)
+
+        acct1 = Account(
+            account_id="acct-001",
+            customer_id=sample_customer.customer_id,
+            account_type="CHECKING",
+            bank_code="341",
+            branch="0001",
+            account_number="111111-1",
+            balance=Decimal("1000.00"),
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_account(acct1)
+
+        # Trigger cache population
+        master_store.get_random_account()
+        assert len(master_store._accounts_cache) == 1
+
+        # Add another account — cache should be cleared
+        acct2 = Account(
+            account_id="acct-002",
+            customer_id=sample_customer.customer_id,
+            account_type="SAVINGS",
+            bank_code="341",
+            branch="0001",
+            account_number="222222-2",
+            balance=Decimal("2000.00"),
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_account(acct2)
+        assert master_store._accounts_cache == []
+
+        # Next random access should rebuild cache with 2 accounts
+        result = master_store.get_random_account()
+        assert result is not None
+        assert len(master_store._accounts_cache) == 2
+
+
+class TestMasterDataStoreCreditCard:
+    """Tests for MasterDataStore credit card operations."""
+
+    def test_add_credit_card(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test adding a credit card."""
+        master_store.add_customer(sample_customer)
+
+        card = CreditCard(
+            card_id="card-001",
+            customer_id=sample_customer.customer_id,
+            card_number_masked="****-****-****-1234",
+            brand="VISA",
+            credit_limit=Decimal("5000.00"),
+            available_limit=Decimal("4500.00"),
+            due_day=15,
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_credit_card(card)
+
+        assert card.card_id in master_store.credit_cards
+        assert card.card_id in master_store._customer_cards[sample_customer.customer_id]
+
+    def test_add_credit_card_without_customer_fails(
+        self, master_store: MasterDataStore
+    ) -> None:
+        """Test that adding card without customer raises error."""
+        card = CreditCard(
+            card_id="card-001",
+            customer_id="non-existent",
+            card_number_masked="****-****-****-1234",
+            brand="VISA",
+            credit_limit=Decimal("5000.00"),
+            available_limit=Decimal("4500.00"),
+            due_day=15,
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
+            master_store.add_credit_card(card)
+
+
+class TestMasterDataStoreLoan:
+    """Tests for MasterDataStore loan operations."""
+
+    def test_add_loan(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test adding a personal loan."""
+        master_store.add_customer(sample_customer)
+
+        loan = Loan(
+            loan_id="loan-001",
+            customer_id=sample_customer.customer_id,
+            loan_type="PERSONAL",
+            principal=Decimal("10000.00"),
+            interest_rate=Decimal("0.03"),
+            term_months=24,
+            amortization_system="PRICE",
+            status="ACTIVE",
+            disbursement_date=date.today(),
+            property_id=None,
+            created_at=datetime.now(),
+        )
+        master_store.add_loan(loan)
+
+        assert loan.loan_id in master_store.loans
+        assert loan.loan_id in master_store._customer_loans[sample_customer.customer_id]
+
+    def test_add_loan_with_property(
+        self,
+        master_store: MasterDataStore,
+        sample_customer: Customer,
+        sample_property: Property,
+    ) -> None:
+        """Test adding a housing loan with property reference."""
+        master_store.add_customer(sample_customer)
+        master_store.add_property(sample_property)
+
+        loan = Loan(
+            loan_id="loan-002",
+            customer_id=sample_customer.customer_id,
+            loan_type="HOUSING",
+            principal=Decimal("400000.00"),
+            interest_rate=Decimal("0.009"),
+            term_months=360,
+            amortization_system="SAC",
+            status="ACTIVE",
+            disbursement_date=date.today(),
+            property_id=sample_property.property_id,
+            created_at=datetime.now(),
+        )
+        master_store.add_loan(loan)
+
+        assert loan.loan_id in master_store.loans
+
+    def test_add_loan_without_customer_fails(self, master_store: MasterDataStore) -> None:
+        """Test that adding loan without customer raises error."""
+        loan = Loan(
+            loan_id="loan-001",
+            customer_id="non-existent",
+            loan_type="PERSONAL",
+            principal=Decimal("10000.00"),
+            interest_rate=Decimal("0.03"),
+            term_months=24,
+            amortization_system="PRICE",
+            status="ACTIVE",
+            disbursement_date=date.today(),
+            property_id=None,
+            created_at=datetime.now(),
+        )
+
+        with pytest.raises(ReferentialIntegrityError, match="Customer .* not found"):
+            master_store.add_loan(loan)
+
+    def test_add_loan_with_missing_property_fails(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test that adding loan with non-existent property raises error."""
+        master_store.add_customer(sample_customer)
+
+        loan = Loan(
+            loan_id="loan-002",
+            customer_id=sample_customer.customer_id,
+            loan_type="HOUSING",
+            principal=Decimal("400000.00"),
+            interest_rate=Decimal("0.009"),
+            term_months=360,
+            amortization_system="SAC",
+            status="ACTIVE",
+            disbursement_date=date.today(),
+            property_id="non-existent",
+            created_at=datetime.now(),
+        )
+
+        with pytest.raises(ReferentialIntegrityError, match="Property .* not found"):
+            master_store.add_loan(loan)
+
+
+class TestMasterDataStorePropertyAndStock:
+    """Tests for MasterDataStore property and stock operations."""
+
+    def test_add_property(
+        self, master_store: MasterDataStore, sample_property: Property
+    ) -> None:
+        """Test adding a property."""
+        master_store.add_property(sample_property)
+        assert sample_property.property_id in master_store.properties
+
+    def test_add_stock(self, master_store: MasterDataStore) -> None:
+        """Test adding a stock."""
+        stock = Stock(
+            stock_id="stock-001",
+            ticker="PETR4",
+            company_name="Petrobras",
+            sector="ENERGY",
+            segment="NOVO_MERCADO",
+            current_price=Decimal("32.50"),
+            currency="BRL",
+            isin="BRPETRACNPR6",
+            lot_size=100,
+            created_at=datetime.now(),
+        )
+        master_store.add_stock(stock)
+
+        assert stock.stock_id in master_store.stocks
+
+
+class TestMasterDataStoreFKValidation:
+    """Tests for FK validation methods (validate without storing)."""
+
+    def test_validate_transaction_fk_success(
+        self, master_store: MasterDataStore, sample_customer: Customer, sample_account: Account
+    ) -> None:
+        """Test transaction FK validation passes with valid account."""
+        master_store.add_customer(sample_customer)
+        master_store.add_account(sample_account)
+
+        master_store.validate_transaction_fk(sample_account.account_id)  # should not raise
+
+    def test_validate_transaction_fk_fails(self, master_store: MasterDataStore) -> None:
+        """Test transaction FK validation fails with missing account."""
+        with pytest.raises(ReferentialIntegrityError, match="Account .* not found"):
+            master_store.validate_transaction_fk("non-existent")
+
+    def test_validate_card_transaction_fk_success(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test card transaction FK validation passes with valid card."""
+        master_store.add_customer(sample_customer)
+        card = CreditCard(
+            card_id="card-001",
+            customer_id=sample_customer.customer_id,
+            card_number_masked="****-****-****-1234",
+            brand="VISA",
+            credit_limit=Decimal("5000.00"),
+            available_limit=Decimal("4500.00"),
+            due_day=15,
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_credit_card(card)
+
+        master_store.validate_card_transaction_fk(card.card_id)  # should not raise
+
+    def test_validate_card_transaction_fk_fails(self, master_store: MasterDataStore) -> None:
+        """Test card transaction FK validation fails with missing card."""
+        with pytest.raises(ReferentialIntegrityError, match="Credit card .* not found"):
+            master_store.validate_card_transaction_fk("non-existent")
+
+    def test_validate_trade_fk_success(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test trade FK validation passes with valid account and stock."""
+        master_store.add_customer(sample_customer)
+
+        account = Account(
+            account_id="acct-invest-001",
+            customer_id=sample_customer.customer_id,
+            account_type="INVESTIMENTOS",
+            bank_code="341",
+            branch="0001",
+            account_number="123456-7",
+            balance=Decimal("50000.00"),
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_account(account)
+
+        stock = Stock(
+            stock_id="stock-001",
+            ticker="VALE3",
+            company_name="Vale",
+            sector="MINING",
+            segment="NOVO_MERCADO",
+            current_price=Decimal("68.00"),
+            currency="BRL",
+            isin="BRVALEACNOR0",
+            lot_size=100,
+            created_at=datetime.now(),
+        )
+        master_store.add_stock(stock)
+
+        master_store.validate_trade_fk(account.account_id, stock.stock_id)  # should not raise
+
+    def test_validate_trade_fk_missing_account(self, master_store: MasterDataStore) -> None:
+        """Test trade FK validation fails with missing account."""
+        stock = Stock(
+            stock_id="stock-001",
+            ticker="VALE3",
+            company_name="Vale",
+            sector="MINING",
+            segment="NOVO_MERCADO",
+            current_price=Decimal("68.00"),
+            currency="BRL",
+            isin="BRVALEACNOR0",
+            lot_size=100,
+            created_at=datetime.now(),
+        )
+        master_store.add_stock(stock)
+
+        with pytest.raises(ReferentialIntegrityError, match="Account .* not found"):
+            master_store.validate_trade_fk("non-existent", stock.stock_id)
+
+    def test_validate_trade_fk_missing_stock(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test trade FK validation fails with missing stock."""
+        master_store.add_customer(sample_customer)
+
+        account = Account(
+            account_id="acct-invest-001",
+            customer_id=sample_customer.customer_id,
+            account_type="INVESTIMENTOS",
+            bank_code="341",
+            branch="0001",
+            account_number="123456-7",
+            balance=Decimal("50000.00"),
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_account(account)
+
+        with pytest.raises(ReferentialIntegrityError, match="Stock .* not found"):
+            master_store.validate_trade_fk(account.account_id, "non-existent")
+
+    def test_validate_trade_fk_non_investment_account(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test trade FK validation fails with non-investment account."""
+        master_store.add_customer(sample_customer)
+
+        account = Account(
+            account_id="acct-checking-001",
+            customer_id=sample_customer.customer_id,
+            account_type="CONTA_CORRENTE",
+            bank_code="341",
+            branch="0001",
+            account_number="123456-7",
+            balance=Decimal("50000.00"),
+            status="ACTIVE",
+            created_at=datetime.now(),
+        )
+        master_store.add_account(account)
+
+        stock = Stock(
+            stock_id="stock-001",
+            ticker="VALE3",
+            company_name="Vale",
+            sector="MINING",
+            segment="NOVO_MERCADO",
+            current_price=Decimal("68.00"),
+            currency="BRL",
+            isin="BRVALEACNOR0",
+            lot_size=100,
+            created_at=datetime.now(),
+        )
+        master_store.add_stock(stock)
+
+        with pytest.raises(InvalidEntityStateError, match="not an investment account"):
+            master_store.validate_trade_fk(account.account_id, stock.stock_id)
+
+    def test_validate_installment_fk_success(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test installment FK validation passes with valid loan."""
+        master_store.add_customer(sample_customer)
+
+        loan = Loan(
+            loan_id="loan-001",
+            customer_id=sample_customer.customer_id,
+            loan_type="PERSONAL",
+            principal=Decimal("10000.00"),
+            interest_rate=Decimal("0.03"),
+            term_months=12,
+            amortization_system="PRICE",
+            status="ACTIVE",
+            disbursement_date=date.today(),
+            property_id=None,
+            created_at=datetime.now(),
+        )
+        master_store.add_loan(loan)
+
+        master_store.validate_installment_fk(loan.loan_id)  # should not raise
+
+    def test_validate_installment_fk_fails(self, master_store: MasterDataStore) -> None:
+        """Test installment FK validation fails with missing loan."""
+        with pytest.raises(ReferentialIntegrityError, match="Loan .* not found"):
+            master_store.validate_installment_fk("non-existent")
+
+
+class TestMasterDataStoreEventCounting:
+    """Tests for event counting (count_event + summary)."""
+
+    def test_count_event_single(self, master_store: MasterDataStore) -> None:
+        """Test counting a single event."""
+        master_store.count_event("transactions")
+        assert master_store._event_counts["transactions"] == 1
+
+    def test_count_event_batch(self, master_store: MasterDataStore) -> None:
+        """Test counting multiple events at once."""
+        master_store.count_event("card_transactions", count=50)
+        assert master_store._event_counts["card_transactions"] == 50
+
+    def test_count_event_accumulates(self, master_store: MasterDataStore) -> None:
+        """Test that event counts accumulate."""
+        master_store.count_event("trades", count=10)
+        master_store.count_event("trades", count=20)
+        assert master_store._event_counts["trades"] == 30
+
+    def test_summary_includes_event_counts(
+        self, master_store: MasterDataStore, sample_customer: Customer, sample_account: Account
+    ) -> None:
+        """Test that summary merges master counts with event counts."""
+        master_store.add_customer(sample_customer)
+        master_store.add_account(sample_account)
+        master_store.count_event("transactions", count=100)
+        master_store.count_event("card_transactions", count=50)
+        master_store.count_event("installments", count=24)
+        master_store.count_event("trades", count=10)
+
+        summary = master_store.summary()
+
+        assert summary["customers"] == 1
+        assert summary["accounts"] == 1
+        assert summary["credit_cards"] == 0
+        assert summary["loans"] == 0
+        assert summary["properties"] == 0
+        assert summary["stocks"] == 0
+        assert summary["transactions"] == 100
+        assert summary["card_transactions"] == 50
+        assert summary["installments"] == 24
+        assert summary["trades"] == 10
+
+
+class TestMasterDataStoreQueryMethods:
+    """Tests for MasterDataStore query methods."""
+
+    def test_get_customer_accounts(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test retrieving accounts for a customer."""
+        master_store.add_customer(sample_customer)
+
+        for i in range(3):
+            account = Account(
+                account_id=f"acct-{i:03d}",
+                customer_id=sample_customer.customer_id,
+                account_type="CHECKING",
+                bank_code="341",
+                branch="0001",
+                account_number=f"12345{i}-7",
+                balance=Decimal("1000.00"),
+                status="ACTIVE",
+                created_at=datetime.now(),
+            )
+            master_store.add_account(account)
+
+        accounts = master_store.get_customer_accounts(sample_customer.customer_id)
+        assert len(accounts) == 3
+
+    def test_get_customer_accounts_empty(self, master_store: MasterDataStore) -> None:
+        """Test getting accounts for non-existent customer."""
+        assert master_store.get_customer_accounts("non-existent") == []
+
+    def test_get_customer_cards(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test retrieving cards for a customer."""
+        master_store.add_customer(sample_customer)
+
+        for i in range(2):
+            card = CreditCard(
+                card_id=f"card-{i:03d}",
+                customer_id=sample_customer.customer_id,
+                card_number_masked=f"****-****-****-{1000 + i}",
+                brand="MASTERCARD",
+                credit_limit=Decimal("10000.00"),
+                available_limit=Decimal("8000.00"),
+                due_day=10,
+                status="ACTIVE",
+                created_at=datetime.now(),
+            )
+            master_store.add_credit_card(card)
+
+        cards = master_store.get_customer_cards(sample_customer.customer_id)
+        assert len(cards) == 2
+
+    def test_get_customer_cards_empty(self, master_store: MasterDataStore) -> None:
+        """Test getting cards for non-existent customer."""
+        assert master_store.get_customer_cards("non-existent") == []
+
+    def test_get_customer_loans(
+        self, master_store: MasterDataStore, sample_customer: Customer
+    ) -> None:
+        """Test retrieving loans for a customer."""
+        master_store.add_customer(sample_customer)
+
+        for i in range(2):
+            loan = Loan(
+                loan_id=f"loan-{i:03d}",
+                customer_id=sample_customer.customer_id,
+                loan_type="PERSONAL",
+                principal=Decimal("5000.00"),
+                interest_rate=Decimal("0.03"),
+                term_months=12,
+                amortization_system="PRICE",
+                status="ACTIVE",
+                disbursement_date=date.today(),
+                property_id=None,
+                created_at=datetime.now(),
+            )
+            master_store.add_loan(loan)
+
+        loans = master_store.get_customer_loans(sample_customer.customer_id)
+        assert len(loans) == 2
+
+    def test_get_customer_loans_empty(self, master_store: MasterDataStore) -> None:
+        """Test getting loans for non-existent customer."""
+        assert master_store.get_customer_loans("non-existent") == []
+
+    def test_get_random_account(
+        self, master_store: MasterDataStore, sample_customer: Customer, sample_account: Account
+    ) -> None:
+        """Test getting a random account."""
+        master_store.add_customer(sample_customer)
+        master_store.add_account(sample_account)
+
+        account = master_store.get_random_account()
+        assert account is not None
+        assert account.account_id == sample_account.account_id
+
+    def test_get_random_account_empty(self, master_store: MasterDataStore) -> None:
+        """Test getting random account from empty store."""
+        assert master_store.get_random_account() is None

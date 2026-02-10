@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from data_gen.models.financial.enums import (
+    Direction,
+    PixKeyType,
+    TransactionStatus,
+    TransactionType,
+)
+
 
 @dataclass
 class Transaction:
@@ -11,18 +18,18 @@ class Transaction:
 
     transaction_id: str
     account_id: str
-    transaction_type: str  # PIX, TED, DOC, WITHDRAW, DEPOSIT, BOLETO
+    transaction_type: TransactionType
     amount: Decimal
-    direction: str  # CREDIT, DEBIT
+    direction: Direction
     counterparty_key: str | None  # Pix key, account number, etc.
     counterparty_name: str | None
     description: str
     timestamp: datetime
-    status: str  # PENDING, COMPLETED, FAILED
+    status: TransactionStatus
 
     # Pix-specific fields (optional)
     pix_e2e_id: str | None = None
-    pix_key_type: str | None = None  # CPF, CNPJ, EMAIL, PHONE, EVP
+    pix_key_type: PixKeyType | None = None
 
     # Location for fraud detection (optional)
     location_lat: float | None = None
@@ -30,4 +37,5 @@ class Transaction:
 
     # Incremental processing fields
     created_at: datetime | None = None  # Record creation timestamp
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing

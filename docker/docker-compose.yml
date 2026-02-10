@@ -1,41 +1,23 @@
-version: '3.8'
-
 services:
-  # Zookeeper - Coordination service
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    hostname: zookeeper
-    container_name: datagen-zookeeper
-    ports:
-      - "2181:2181"
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-      - zookeeper-logs:/var/lib/zookeeper/log
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2181"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Kafka Broker
+  # Kafka Broker (KRaft mode - no Zookeeper)
+  # Uses cp-server (enterprise) for TelemetryReporter required by Control Center Next-Gen
   broker:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-server:8.1.1
     hostname: broker
     container_name: datagen-broker
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     ports:
       - "9092:9092"
       - "29092:29092"
+      - "9101:9101"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://broker:29092,CONTROLLER://broker:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:29093
+      KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -43,6 +25,24 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
       KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # Telemetry for Control Center Next-Gen
+      KAFKA_METRIC_REPORTERS: io.confluent.telemetry.reporter.TelemetryReporter
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_TYPE: "http"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_ENABLED: "true"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_METRICS_INCLUDE: "io.confluent.kafka.server.request.(?!.*delta).*|io.confluent.kafka.server.server.broker.state|io.confluent.kafka.server.replica.manager.leader.count|io.confluent.kafka.server.request.queue.size|io.confluent.kafka.server.broker.topic.failed.produce.requests.rate.1.min|io.confluent.kafka.server.tier.archiver.total.lag|io.confluent.kafka.server.request.total.time.ms.p99|io.confluent.kafka.server.broker.topic.failed.fetch.requests.rate.1.min|io.confluent.kafka.server.broker.topic.total.fetch.requests.rate.1.min|io.confluent.kafka.server.partition.caught.up.replicas.count|io.confluent.kafka.server.partition.observer.replicas.count|io.confluent.kafka.server.tier.tasks.num.partitions.in.error|io.confluent.kafka.server.broker.topic.bytes.out.rate.1.min|io.confluent.kafka.server.request.total.time.ms.p95|io.confluent.kafka.server.controller.active.controller.count|io.confluent.kafka.server.request.total.time.ms.p999|io.confluent.kafka.server.controller.active.broker.count|io.confluent.kafka.server.request.handler.pool.request.handler.avg.idle.percent.rate.1.min|io.confluent.kafka.server.controller.unclean.leader.elections.rate.1.min|io.confluent.kafka.server.replica.manager.partition.count|io.confluent.kafka.server.controller.unclean.leader.elections.total|io.confluent.kafka.server.partition.replicas.count|io.confluent.kafka.server.broker.topic.total.produce.requests.rate.1.min|io.confluent.kafka.server.controller.offline.partitions.count|io.confluent.kafka.server.socket.server.network.processor.avg.idle.percent|io.confluent.kafka.server.partition.under.replicated|io.confluent.kafka.server.log.log.start.offset|io.confluent.kafka.server.log.tier.size|io.confluent.kafka.server.log.size|io.confluent.kafka.server.tier.fetcher.bytes.fetched.total|io.confluent.kafka.server.request.total.time.ms.p50|io.confluent.kafka.server.tenant.consumer.lag.offsets|io.confluent.kafka.server.log.log.end.offset|io.confluent.kafka.server.broker.topic.bytes.in.rate.1.min|io.confluent.kafka.server.partition.under.min.isr|io.confluent.kafka.server.partition.in.sync.replicas.count|io.confluent.telemetry.http.exporter.batches.dropped|io.confluent.telemetry.http.exporter.items.total|io.confluent.telemetry.http.exporter.items.succeeded|io.confluent.telemetry.http.exporter.send.time.total.millis|io.confluent.kafka.server.controller.leader.election.rate.(?!.*delta).*|io.confluent.telemetry.http.exporter.batches.failed"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_CLIENT_BASE_URL: "http://prometheus:9090/api/v1/otlp"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_CLIENT_COMPRESSION: "gzip"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_API_KEY: "dummy"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_API_SECRET: "dummy"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_BUFFER_PENDING_BATCHES_MAX: "80"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_BUFFER_BATCH_ITEMS_MAX: "4000"
+      KAFKA_CONFLUENT_TELEMETRY_EXPORTER_C3PLUSPLUS_BUFFER_INFLIGHT_SUBMISSIONS_MAX: "10"
+      KAFKA_CONFLUENT_TELEMETRY_METRICS_COLLECTOR_INTERVAL_MS: "60000"
+      KAFKA_CONFLUENT_TELEMETRY_REMOTECONFIG_CONFLUENT_ENABLED: "false"
+      KAFKA_CONFLUENT_CONSUMER_LAG_EMITTER_ENABLED: "true"
     volumes:
       - broker-data:/var/lib/kafka/data
     healthcheck:
@@ -53,7 +53,7 @@ services:
 
   # Schema Registry - Schema management for Avro/JSON/Protobuf
   schema-registry:
-    image: confluentinc/cp-schema-registry:7.5.0
+    image: confluentinc/cp-schema-registry:8.1.1
     hostname: schema-registry
     container_name: datagen-schema-registry
     depends_on:
@@ -74,7 +74,7 @@ services:
 
   # Kafka Connect - Data integration framework
   connect:
-    image: confluentinc/cp-kafka-connect:7.5.0
+    image: confluentinc/cp-kafka-connect:8.1.1
     hostname: connect
     container_name: datagen-connect
     depends_on:
@@ -107,10 +107,10 @@ services:
       - -c
       - |
         echo "Installing connectors..."
-        confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.7.4
-        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.4.0
-        confluent-hub install --no-prompt confluentinc/kafka-connect-elasticsearch:14.0.12
-        confluent-hub install --no-prompt confluentinc/kafka-connect-json-schema-converter:7.5.0
+        confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.7.6
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.5.0
+        confluent-hub install --no-prompt confluentinc/kafka-connect-elasticsearch:14.1.0
+        confluent-hub install --no-prompt confluentinc/kafka-connect-json-schema-converter:7.9.5
         echo "Starting Connect..."
         /etc/confluent/docker/run
     healthcheck:
@@ -120,9 +120,40 @@ services:
       retries: 10
       start_period: 90s
 
-  # Control Center - Web UI for monitoring
+  # Prometheus - Metrics backend for Control Center Next-Gen
+  prometheus:
+    image: confluentinc/cp-enterprise-prometheus:2.2.1
+    hostname: prometheus
+    container_name: datagen-prometheus
+    depends_on:
+      broker:
+        condition: service_healthy
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config:/mnt/config
+    environment:
+      CONFIG_PATH: "/mnt/config"
+      SHOULD_LOG_TO_FILE: "false"
+
+  # Alertmanager - Alerting backend for Control Center Next-Gen
+  alertmanager:
+    image: confluentinc/cp-enterprise-alertmanager:2.2.1
+    hostname: alertmanager
+    container_name: datagen-alertmanager
+    depends_on:
+      - prometheus
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config:/mnt/config
+    environment:
+      CONFIG_PATH: "/mnt/config"
+      SHOULD_LOG_TO_FILE: "false"
+
+  # Confluent Control Center Next-Gen - Web UI for monitoring Kafka
   control-center:
-    image: confluentinc/cp-enterprise-control-center:7.5.0
+    image: confluentinc/cp-enterprise-control-center-next-gen:2.2.1
     hostname: control-center
     container_name: datagen-control-center
     depends_on:
@@ -132,24 +163,33 @@ services:
         condition: service_healthy
       connect:
         condition: service_healthy
+      prometheus:
+        condition: service_started
+      alertmanager:
+        condition: service_started
     ports:
       - "9021:9021"
+    volumes:
+      - ./config:/mnt/config
     environment:
       CONTROL_CENTER_BOOTSTRAP_SERVERS: broker:29092
+      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: connect:8083
+      CONTROL_CENTER_CONNECT_HEALTHCHECK_ENDPOINT: /connectors
       CONTROL_CENTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      CONTROL_CENTER_CONNECT_DATAGEN_CLUSTER: http://connect:8083
-      CONTROL_CENTER_CONNECT_HEALTHCHECK_ENDPOINT: /
-      CONTROL_CENTER_KSQL_KSQLDB1_URL: http://ksqldb-server:8088
-      CONTROL_CENTER_KSQL_KSQLDB1_ADVERTISED_URL: http://localhost:8088
       CONTROL_CENTER_REPLICATION_FACTOR: 1
       CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
       CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
       CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_PROMETHEUS_ENABLE: "true"
+      CONTROL_CENTER_PROMETHEUS_URL: http://prometheus:9090
+      CONTROL_CENTER_PROMETHEUS_RULES_FILE: /mnt/config/trigger_rules-generated.yml
+      CONTROL_CENTER_ALERTMANAGER_URL: http://alertmanager:9093
+      CONTROL_CENTER_ALERTMANAGER_CONFIG_FILE: /mnt/config/alertmanager-generated.yml
       PORT: 9021
 
   # ksqlDB Server - Streaming SQL engine
   ksqldb-server:
-    image: confluentinc/cp-ksqldb-server:7.5.0
+    image: confluentinc/cp-ksqldb-server:8.1.1
     hostname: ksqldb-server
     container_name: datagen-ksqldb-server
     depends_on:
@@ -174,7 +214,7 @@ services:
 
   # REST Proxy - HTTP interface for Kafka
   rest-proxy:
-    image: confluentinc/cp-kafka-rest:7.5.0
+    image: confluentinc/cp-kafka-rest:8.1.1
     hostname: rest-proxy
     container_name: datagen-rest-proxy
     depends_on:
@@ -190,7 +230,7 @@ services:
       KAFKA_REST_LISTENERS: http://0.0.0.0:8082
       KAFKA_REST_SCHEMA_REGISTRY_URL: http://schema-registry:8081
 
-  # PostgreSQL - For testing JDBC connectors
+  # PostgreSQL - For testing JDBC connectors and bulk loading
   postgres:
     image: postgres:16-alpine
     hostname: postgres
@@ -203,6 +243,19 @@ services:
       POSTGRES_DB: datagen
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c work_mem=64MB
+      -c maintenance_work_mem=128MB
+      -c max_wal_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_level=minimal
+      -c max_wal_senders=0
+      -c synchronous_commit=off
+      -c fsync=off
+      -c full_page_writes=off
+      -c checkpoint_timeout=1800
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -210,8 +263,6 @@ services:
       retries: 5
 
 volumes:
-  zookeeper-data:
-  zookeeper-logs:
   broker-data:
   connect-plugins:
   postgres-data:

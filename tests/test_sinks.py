@@ -163,53 +163,51 @@ class TestConsoleSink:
 
     def test_to_dict_other_type(self) -> None:
         """Test converting non-dict, non-dataclass object."""
-        sink = ConsoleSink()
+        from data_gen.sinks.serialization import to_dict
 
-        result = sink._to_dict("simple string")
+        result = to_dict("simple string")
         assert result == {"value": "simple string"}
 
     def test_serialize_value_decimal(self) -> None:
         """Test serializing Decimal values."""
-        sink = ConsoleSink()
+        from data_gen.sinks.serialization import serialize_value
 
-        result = sink._serialize_value(Decimal("123.45"))
-        assert result == 123.45
+        result = serialize_value(Decimal("123.45"))
+        assert result == "123.45"
 
     def test_serialize_value_datetime(self) -> None:
         """Test serializing datetime values."""
-        sink = ConsoleSink()
-        dt = datetime(2024, 1, 15, 10, 30, 0)
+        from data_gen.sinks.serialization import serialize_value
 
-        result = sink._serialize_value(dt)
+        dt = datetime(2024, 1, 15, 10, 30, 0)
+        result = serialize_value(dt)
         assert result == "2024-01-15T10:30:00"
 
     def test_serialize_value_date(self) -> None:
         """Test serializing date values."""
-        sink = ConsoleSink()
         from datetime import date
 
-        d = date(2024, 1, 15)
+        from data_gen.sinks.serialization import serialize_value
 
-        result = sink._serialize_value(d)
+        d = date(2024, 1, 15)
+        result = serialize_value(d)
         assert result == "2024-01-15"
 
     def test_serialize_value_nested_dict(self) -> None:
         """Test serializing nested dictionaries."""
-        sink = ConsoleSink()
+        from data_gen.sinks.serialization import serialize_value
 
         data = {"level1": {"level2": Decimal("10.5")}}
-        result = sink._serialize_value(data)
-
-        assert result == {"level1": {"level2": 10.5}}
+        result = serialize_value(data)
+        assert result == {"level1": {"level2": "10.5"}}
 
     def test_serialize_value_list(self) -> None:
         """Test serializing lists."""
-        sink = ConsoleSink()
+        from data_gen.sinks.serialization import serialize_value
 
         data = [Decimal("1.0"), Decimal("2.0")]
-        result = sink._serialize_value(data)
-
-        assert result == [1.0, 2.0]
+        result = serialize_value(data)
+        assert result == ["1.0", "2.0"]
 
 
 class TestJsonFileSink:
@@ -288,7 +286,7 @@ class TestJsonFileSink:
                 data = json.load(f)
 
             assert data[0]["transaction_id"] == "tx-001"
-            assert data[0]["amount"] == 100.50
+            assert data[0]["amount"] == "100.50"
 
     def test_write_stream(self) -> None:
         """Test streaming to JSON Lines file."""
@@ -351,30 +349,28 @@ class TestJsonFileSink:
 
     def test_to_dict_other_type(self) -> None:
         """Test converting non-dict, non-dataclass object."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sink = JsonFileSink(tmpdir)
+        from data_gen.sinks.serialization import to_dict
 
-            result = sink._to_dict(12345)
-            assert result == {"value": "12345"}
+        result = to_dict(12345)
+        assert result == {"value": "12345"}
 
     def test_serialize_nested_structures(self) -> None:
         """Test serializing complex nested structures."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            sink = JsonFileSink(tmpdir)
+        from data_gen.sinks.serialization import serialize_value
 
-            data = {
-                "decimal": Decimal("123.45"),
-                "datetime": datetime(2024, 1, 15, 10, 0),
-                "nested": {"inner_decimal": Decimal("67.89")},
-                "list_of_decimals": [Decimal("1.0"), Decimal("2.0")],
-            }
+        data = {
+            "decimal": Decimal("123.45"),
+            "datetime": datetime(2024, 1, 15, 10, 0),
+            "nested": {"inner_decimal": Decimal("67.89")},
+            "list_of_decimals": [Decimal("1.0"), Decimal("2.0")],
+        }
 
-            result = sink._serialize_value(data)
+        result = serialize_value(data)
 
-            assert result["decimal"] == 123.45
-            assert result["datetime"] == "2024-01-15T10:00:00"
-            assert result["nested"]["inner_decimal"] == 67.89
-            assert result["list_of_decimals"] == [1.0, 2.0]
+        assert result["decimal"] == "123.45"
+        assert result["datetime"] == "2024-01-15T10:00:00"
+        assert result["nested"]["inner_decimal"] == "67.89"
+        assert result["list_of_decimals"] == ["1.0", "2.0"]
 
 
 class TestKafkaSinkMocked:
@@ -399,11 +395,28 @@ class TestKafkaSinkMocked:
 
     def test_producer_config_presets(self) -> None:
         """Test producer configuration presets."""
-        from data_gen.sinks.kafka import EVENT_BY_EVENT, FAST, RELIABLE
+        from data_gen.sinks.kafka import BULK, EVENT_BY_EVENT, FAST, RELIABLE
 
         assert RELIABLE.acks == "all"
+        assert RELIABLE.enable_idempotence is True
         assert FAST.acks == "0"
         assert EVENT_BY_EVENT.batch_size == 1
+        assert BULK.acks == "1"
+        assert BULK.batch_size == 524288
+        assert BULK.linger_ms == 100
+        assert BULK.compression == "lz4"
+        assert BULK.queue_buffering_max_messages == 500000
+        assert BULK.queue_buffering_max_kbytes == 2097152
+
+    def test_producer_config_defaults(self) -> None:
+        """Test ProducerConfig default values for new fields."""
+        from data_gen.sinks.kafka import ProducerConfig
+
+        config = ProducerConfig(bootstrap_servers="localhost:9092")
+
+        assert config.enable_idempotence is False
+        assert config.queue_buffering_max_messages == 100000
+        assert config.queue_buffering_max_kbytes == 1048576
 
     def test_producer_stats(self) -> None:
         """Test ProducerStats dataclass."""
@@ -463,6 +476,78 @@ class TestKafkaSinkMocked:
         assert sink.config.acks == "1"
 
     @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_idempotence_config(self, mock_producer_class: MagicMock) -> None:
+        """Test enable.idempotence is passed to Producer when enabled."""
+        from data_gen.sinks.kafka import KafkaSink, ProducerConfig
+
+        config = ProducerConfig(
+            bootstrap_servers="localhost:9092",
+            enable_idempotence=True,
+        )
+        KafkaSink(config)
+
+        producer_conf = mock_producer_class.call_args[0][0]
+        assert producer_conf["enable.idempotence"] is True
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_no_idempotence_by_default(self, mock_producer_class: MagicMock) -> None:
+        """Test enable.idempotence is NOT set when disabled."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        KafkaSink("localhost:9092")
+
+        producer_conf = mock_producer_class.call_args[0][0]
+        assert "enable.idempotence" not in producer_conf
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_buffer_config(self, mock_producer_class: MagicMock) -> None:
+        """Test buffer config is passed to Producer."""
+        from data_gen.sinks.kafka import KafkaSink, ProducerConfig
+
+        config = ProducerConfig(
+            bootstrap_servers="localhost:9092",
+            queue_buffering_max_messages=500000,
+            queue_buffering_max_kbytes=2097152,
+        )
+        KafkaSink(config)
+
+        producer_conf = mock_producer_class.call_args[0][0]
+        assert producer_conf["queue.buffering.max.messages"] == 500000
+        assert producer_conf["queue.buffering.max.kbytes"] == 2097152
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_poll_interval_default(self, mock_producer_class: MagicMock) -> None:
+        """Test default poll interval is 10000."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+        assert sink._poll_interval == 10000
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_poll_interval_custom(self, mock_producer_class: MagicMock) -> None:
+        """Test custom poll interval."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092", poll_interval=500)
+        assert sink._poll_interval == 500
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_batch_poll(self, mock_producer_class: MagicMock) -> None:
+        """Test that poll is called every poll_interval messages."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer_class.return_value = mock_producer
+
+        sink = KafkaSink("localhost:9092", poll_interval=5)
+
+        for i in range(12):
+            sink.send("test_topic", {"id": i})
+
+        # poll should be called at messages 5 and 10 (twice)
+        assert mock_producer.poll.call_count == 2
+
+    @patch("data_gen.sinks.kafka.Producer")
     def test_kafka_sink_send(self, mock_producer_class: MagicMock) -> None:
         """Test sending a single record."""
         from data_gen.sinks.kafka import KafkaSink
@@ -491,11 +576,32 @@ class TestKafkaSinkMocked:
         assert call_kwargs["key"] is None
 
     @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_send_buffer_error_retry(self, mock_producer_class: MagicMock) -> None:
+        """Test send() retries on BufferError after polling."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer_class.return_value = mock_producer
+
+        # First produce call raises BufferError, second succeeds
+        mock_producer.produce.side_effect = [BufferError("queue full"), None]
+
+        sink = KafkaSink("localhost:9092")
+        sink.send("test_topic", {"id": 1}, key="key-1")
+
+        # Should have called produce twice (initial + retry)
+        assert mock_producer.produce.call_count == 2
+        # Should have polled to drain the queue between attempts
+        mock_producer.poll.assert_called_with(1.0)
+        assert sink.stats.sent == 1
+
+    @patch("data_gen.sinks.kafka.Producer")
     def test_kafka_sink_write_batch(self, mock_producer_class: MagicMock) -> None:
         """Test writing a batch of records."""
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -549,6 +655,7 @@ class TestKafkaSinkMocked:
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -557,11 +664,28 @@ class TestKafkaSinkMocked:
         mock_producer.flush.assert_called_once_with(10.0)
 
     @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_flush_warns_on_remaining(self, mock_producer_class: MagicMock) -> None:
+        """Test flush logs warning when messages remain after timeout."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer.flush.return_value = 42  # 42 messages still in queue
+        mock_producer_class.return_value = mock_producer
+
+        sink = KafkaSink("localhost:9092")
+
+        with patch("data_gen.sinks.kafka.logger") as mock_logger:
+            sink.flush(timeout=5.0)
+            mock_logger.warning.assert_called_once()
+            assert "42 messages" in mock_logger.warning.call_args[0][0] % mock_logger.warning.call_args[0][1:]
+
+    @patch("data_gen.sinks.kafka.Producer")
     def test_kafka_sink_close(self, mock_producer_class: MagicMock) -> None:
         """Test close method."""
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -570,14 +694,40 @@ class TestKafkaSinkMocked:
         mock_producer.flush.assert_called()
 
     @patch("data_gen.sinks.kafka.Producer")
-    def test_kafka_sink_to_dict_dataclass(self, mock_producer_class: MagicMock) -> None:
-        """Test converting dataclass to dict."""
+    def test_kafka_sink_close_scales_timeout(self, mock_producer_class: MagicMock) -> None:
+        """Test close() scales flush timeout based on messages sent."""
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
+        sink.stats.sent = 500000  # 500K messages
+
+        sink.close()
+
+        mock_producer.flush.assert_called_with(80.0)
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_kafka_sink_close_timeout_capped(self, mock_producer_class: MagicMock) -> None:
+        """Test close() caps flush timeout at 300s."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
+        mock_producer_class.return_value = mock_producer
+
+        sink = KafkaSink("localhost:9092")
+        sink.stats.sent = 10_000_000  # 10M messages
+
+        sink.close()
+
+        mock_producer.flush.assert_called_with(300.0)
+
+    def test_kafka_sink_to_dict_dataclass(self) -> None:
+        """Test converting dataclass to dict."""
+        from data_gen.sinks.serialization import to_dict
 
         tx = Transaction(
             transaction_id="tx-001",
@@ -592,23 +742,17 @@ class TestKafkaSinkMocked:
             status="COMPLETED",
         )
 
-        result = sink._to_dict(tx)
+        result = to_dict(tx)
 
         assert result["transaction_id"] == "tx-001"
-        assert result["amount"] == 100.50
+        assert result["amount"] == "100.50"
         assert result["timestamp"] == "2024-01-15T10:00:00"
 
-    @patch("data_gen.sinks.kafka.Producer")
-    def test_kafka_sink_to_dict_other(self, mock_producer_class: MagicMock) -> None:
+    def test_kafka_sink_to_dict_other(self) -> None:
         """Test converting non-dict/non-dataclass to dict."""
-        from data_gen.sinks.kafka import KafkaSink
+        from data_gen.sinks.serialization import to_dict
 
-        mock_producer = MagicMock()
-        mock_producer_class.return_value = mock_producer
-
-        sink = KafkaSink("localhost:9092")
-
-        result = sink._to_dict("string value")
+        result = to_dict("string value")
         assert result == {"value": "string value"}
 
     @patch("data_gen.sinks.kafka.Producer")
@@ -619,6 +763,7 @@ class TestKafkaSinkMocked:
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -646,6 +791,7 @@ class TestKafkaSinkMocked:
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -663,48 +809,30 @@ class TestKafkaSinkMocked:
         assert stats.sent > 0
         assert stats.sent < 100  # Would be more without timeout
 
-    @patch("data_gen.sinks.kafka.Producer")
-    def test_kafka_sink_serialize_date(self, mock_producer_class: MagicMock) -> None:
-        """Test serializing date values (line 242)."""
+    def test_kafka_sink_serialize_date(self) -> None:
+        """Test serializing date values."""
         from datetime import date
 
-        from data_gen.sinks.kafka import KafkaSink
+        from data_gen.sinks.serialization import serialize_value
 
-        mock_producer = MagicMock()
-        mock_producer_class.return_value = mock_producer
-
-        sink = KafkaSink("localhost:9092")
-
-        result = sink._serialize_value(date(2024, 1, 15))
+        result = serialize_value(date(2024, 1, 15))
         assert result == "2024-01-15"
 
-    @patch("data_gen.sinks.kafka.Producer")
-    def test_kafka_sink_serialize_nested_dict(self, mock_producer_class: MagicMock) -> None:
-        """Test serializing nested dict (line 244)."""
-        from data_gen.sinks.kafka import KafkaSink
-
-        mock_producer = MagicMock()
-        mock_producer_class.return_value = mock_producer
-
-        sink = KafkaSink("localhost:9092")
+    def test_kafka_sink_serialize_nested_dict(self) -> None:
+        """Test serializing nested dict."""
+        from data_gen.sinks.serialization import serialize_value
 
         data = {"outer": {"inner": Decimal("10.5")}}
-        result = sink._serialize_value(data)
-        assert result == {"outer": {"inner": 10.5}}
+        result = serialize_value(data)
+        assert result == {"outer": {"inner": "10.5"}}
 
-    @patch("data_gen.sinks.kafka.Producer")
-    def test_kafka_sink_serialize_list(self, mock_producer_class: MagicMock) -> None:
-        """Test serializing list values (line 246)."""
-        from data_gen.sinks.kafka import KafkaSink
-
-        mock_producer = MagicMock()
-        mock_producer_class.return_value = mock_producer
-
-        sink = KafkaSink("localhost:9092")
+    def test_kafka_sink_serialize_list(self) -> None:
+        """Test serializing list values."""
+        from data_gen.sinks.serialization import serialize_value
 
         data = [Decimal("1.0"), Decimal("2.0")]
-        result = sink._serialize_value(data)
-        assert result == [1.0, 2.0]
+        result = serialize_value(data)
+        assert result == ["1.0", "2.0"]
 
     @patch("data_gen.sinks.kafka.Producer")
     def test_kafka_sink_write_stream_progress_logging(self, mock_producer_class: MagicMock) -> None:
@@ -712,6 +840,7 @@ class TestKafkaSinkMocked:
         from data_gen.sinks.kafka import KafkaSink
 
         mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
         mock_producer_class.return_value = mock_producer
 
         sink = KafkaSink("localhost:9092")
@@ -859,6 +988,7 @@ class TestPostgresSinkMocked:
                     "city": "Test",
                     "state": "SP",
                     "postal_code": "00000-000",
+                    "country": "BR",
                     "monthly_income": Decimal("5000.00"),
                     "employment_status": "EMPLOYED",
                     "credit_score": 700,
@@ -906,10 +1036,13 @@ class TestPostgresSinkMocked:
             sink.write_batch("customers", [customer])
 
             mock_cursor.executemany.assert_called()
-            # The SQL should contain the flattened address fields
-            sql = mock_cursor.executemany.call_args[0][0]
-            assert "street" in sql
-            assert "city" in sql
+            # Verify the row data was flattened (address fields extracted)
+            rows = mock_cursor.executemany.call_args[0][1]
+            assert len(rows) == 1
+            row = rows[0]
+            # The row should contain the flattened address values
+            assert "Test Street" in row
+            assert "São Paulo" in row
         finally:
             self._cleanup_psycopg_mock(original)
 
@@ -1151,9 +1284,358 @@ class TestPostgresSinkMocked:
 
             assert row[0] == "loan-001"
             assert row[1] == date(2024, 1, 15)
-            assert abs(row[2] - 500.00) < 0.01  # Decimal converted to float
+            assert row[2] == Decimal("500.00")  # Decimal passed through natively
         finally:
             self._cleanup_psycopg_mock(original)
+
+
+    def test_postgres_sink_write_batch_copy(self) -> None:
+        """Test writing batch using COPY protocol."""
+        _, mock_conn, mock_cursor, original = self._create_postgres_sink_with_mock()
+
+        try:
+            from data_gen.sinks.postgres import PostgresSink
+
+            sink = PostgresSink("postgresql://user:pass@localhost/db")
+            mock_conn.commit.reset_mock()
+
+            # Mock the copy context manager
+            mock_copy = MagicMock()
+            mock_cursor.copy.return_value.__enter__ = MagicMock(return_value=mock_copy)
+            mock_cursor.copy.return_value.__exit__ = MagicMock(return_value=False)
+
+            records = [
+                {
+                    "stock_id": "stk-001",
+                    "ticker": "PETR4",
+                    "company_name": "Petrobras",
+                    "sector": "Energy",
+                    "segment": "Oil",
+                    "current_price": Decimal("30.00"),
+                    "currency": "BRL",
+                    "isin": "BRPETRACNPR6",
+                    "lot_size": 100,
+                    "created_at": datetime.now(),
+                    "updated_at": None,
+                }
+            ]
+
+            sink.write_batch("stocks", records, use_copy=True)
+
+            mock_cursor.copy.assert_called_once()
+            mock_copy.write_row.assert_called_once()
+            mock_conn.commit.assert_called_once()
+            assert sink._counts["stocks"] == 1
+        finally:
+            self._cleanup_psycopg_mock(original)
+
+    def test_postgres_sink_disable_constraints(self) -> None:
+        """Test disable_constraints sets session_replication_role."""
+        _, mock_conn, mock_cursor, original = self._create_postgres_sink_with_mock()
+
+        try:
+            from data_gen.sinks.postgres import PostgresSink
+
+            sink = PostgresSink("postgresql://user:pass@localhost/db")
+            mock_cursor.execute.reset_mock()
+            mock_conn.commit.reset_mock()
+
+            sink.disable_constraints()
+
+            mock_cursor.execute.assert_called_once_with(
+                "SET session_replication_role = replica"
+            )
+            mock_conn.commit.assert_called_once()
+        finally:
+            self._cleanup_psycopg_mock(original)
+
+    def test_postgres_sink_enable_constraints(self) -> None:
+        """Test enable_constraints restores session_replication_role."""
+        _, mock_conn, mock_cursor, original = self._create_postgres_sink_with_mock()
+
+        try:
+            from data_gen.sinks.postgres import PostgresSink
+
+            sink = PostgresSink("postgresql://user:pass@localhost/db")
+            mock_cursor.execute.reset_mock()
+            mock_conn.commit.reset_mock()
+
+            sink.enable_constraints()
+
+            mock_cursor.execute.assert_called_once_with(
+                "SET session_replication_role = DEFAULT"
+            )
+            mock_conn.commit.assert_called_once()
+        finally:
+            self._cleanup_psycopg_mock(original)
+
+    def test_postgres_truncate_tables(self) -> None:
+        """Test truncate_tables method truncates all tables in correct order."""
+        _, mock_conn, mock_cursor, original = self._create_postgres_sink_with_mock()
+
+        try:
+            from data_gen.sinks.postgres import PostgresSink
+
+            sink = PostgresSink("postgresql://user:pass@localhost/db")
+            mock_conn.commit.reset_mock()
+            mock_cursor.execute.reset_mock()
+
+            sink.truncate_tables()
+
+            # Should have executed TRUNCATE for each table
+            assert mock_cursor.execute.call_count == 9
+            mock_conn.commit.assert_called_once()
+        finally:
+            self._cleanup_psycopg_mock(original)
+
+
+class TestKafkaSinkAvroAndKeys:
+    """Tests for KafkaSink Avro serialization, key extraction, and CloudEvents."""
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_init_with_schema_registry(self, mock_producer_class: MagicMock) -> None:
+        """Test KafkaSink init calls _init_avro_serializers when schema_registry_url is set."""
+        from data_gen.sinks.kafka import KafkaSink, ProducerConfig
+
+        config = ProducerConfig(
+            bootstrap_servers="localhost:9092",
+            schema_registry_url="http://localhost:8081",
+        )
+
+        with patch.object(KafkaSink, "_init_avro_serializers") as mock_init_avro:
+            sink = KafkaSink(config)
+            mock_init_avro.assert_called_once()
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_init_avro_serializers_success(self, mock_producer_class: MagicMock) -> None:
+        """Test _init_avro_serializers with mocked schema registry client."""
+        from data_gen.sinks.kafka import KafkaSink, ProducerConfig
+
+        mock_sr_client = MagicMock()
+        mock_avro_serializer = MagicMock()
+
+        with patch.dict("sys.modules", {
+            "confluent_kafka.schema_registry": MagicMock(
+                SchemaRegistryClient=MagicMock(return_value=mock_sr_client)
+            ),
+            "confluent_kafka.schema_registry.avro": MagicMock(
+                AvroSerializer=MagicMock(return_value=mock_avro_serializer)
+            ),
+        }):
+            config = ProducerConfig(
+                bootstrap_servers="localhost:9092",
+                schema_registry_url="http://localhost:8081",
+            )
+            sink = KafkaSink(config)
+
+            # Should have registered serializers for all entity types
+            assert len(sink._avro_serializers) == 4
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_init_avro_serializers_import_error(self, mock_producer_class: MagicMock) -> None:
+        """Test _init_avro_serializers handles ImportError gracefully."""
+        import sys
+
+        from data_gen.sinks.kafka import KafkaSink, ProducerConfig
+
+        config = ProducerConfig(
+            bootstrap_servers="localhost:9092",
+            schema_registry_url="http://localhost:8081",
+        )
+
+        # Force ImportError by setting modules to None
+        saved_sr = sys.modules.get("confluent_kafka.schema_registry")
+        saved_avro = sys.modules.get("confluent_kafka.schema_registry.avro")
+
+        try:
+            sys.modules["confluent_kafka.schema_registry"] = None  # type: ignore[assignment]
+            sys.modules["confluent_kafka.schema_registry.avro"] = None  # type: ignore[assignment]
+
+            sink = KafkaSink(config)
+            # Should not crash, just log warning and have no serializers
+            assert sink._avro_serializers == {}
+        finally:
+            if saved_sr is not None:
+                sys.modules["confluent_kafka.schema_registry"] = saved_sr
+            else:
+                sys.modules.pop("confluent_kafka.schema_registry", None)
+            if saved_avro is not None:
+                sys.modules["confluent_kafka.schema_registry.avro"] = saved_avro
+            else:
+                sys.modules.pop("confluent_kafka.schema_registry.avro", None)
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_to_avro_dict_with_dataclass(self, mock_producer_class: MagicMock) -> None:
+        """Test _to_avro_dict converts dataclass with Decimal, datetime, date."""
+        from datetime import date
+
+        from confluent_kafka.serialization import MessageField, SerializationContext
+
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+        ctx = SerializationContext("test_topic", MessageField.VALUE)
+
+        tx = Transaction(
+            transaction_id="tx-001",
+            account_id="acct-001",
+            transaction_type="PIX",
+            amount=Decimal("100.50"),
+            direction="DEBIT",
+            counterparty_key=None,
+            counterparty_name=None,
+            description="Test",
+            timestamp=datetime(2024, 1, 15, 10, 0),
+            status="COMPLETED",
+        )
+
+        result = sink._to_avro_dict(tx, ctx)
+
+        # Decimal should be converted to bytes
+        assert isinstance(result["amount"], bytes)
+        # datetime should be converted to epoch millis
+        assert isinstance(result["timestamp"], int)
+        # String fields should remain strings
+        assert result["transaction_id"] == "tx-001"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_to_avro_dict_with_dict(self, mock_producer_class: MagicMock) -> None:
+        """Test _to_avro_dict converts dict input."""
+        from datetime import date
+
+        from confluent_kafka.serialization import MessageField, SerializationContext
+
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+        ctx = SerializationContext("test_topic", MessageField.VALUE)
+
+        data = {
+            "id": "test-1",
+            "amount": Decimal("50.25"),
+            "due_date": date(2024, 6, 15),
+            "created_at": datetime(2024, 1, 1, 12, 0),
+            "name": "Test",
+        }
+
+        result = sink._to_avro_dict(data, ctx)
+
+        assert isinstance(result["amount"], bytes)
+        assert isinstance(result["due_date"], int)  # days since epoch
+        assert isinstance(result["created_at"], int)  # epoch millis
+        assert result["name"] == "Test"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_to_avro_dict_unsupported_type(self, mock_producer_class: MagicMock) -> None:
+        """Test _to_avro_dict raises ValueError for unsupported type."""
+        from confluent_kafka.serialization import MessageField, SerializationContext
+
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+        ctx = SerializationContext("test_topic", MessageField.VALUE)
+
+        with pytest.raises(ValueError, match="Cannot convert"):
+            sink._to_avro_dict("invalid_string", ctx)
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_get_key_dataclass(self, mock_producer_class: MagicMock) -> None:
+        """Test _get_key extracts key from dataclass."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+
+        tx = Transaction(
+            transaction_id="tx-001",
+            account_id="acct-123",
+            transaction_type="PIX",
+            amount=Decimal("100.00"),
+            direction="DEBIT",
+            counterparty_key=None,
+            counterparty_name=None,
+            description="Test",
+            timestamp=datetime.now(),
+            status="COMPLETED",
+        )
+
+        key = sink._get_key("banking.transactions", tx)
+        assert key == "acct-123"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_get_key_dict(self, mock_producer_class: MagicMock) -> None:
+        """Test _get_key extracts key from dict."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+
+        record = {"account_id": "acct-456", "amount": 100}
+        key = sink._get_key("banking.transactions", record)
+        assert key == "acct-456"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_get_key_unsupported_type(self, mock_producer_class: MagicMock) -> None:
+        """Test _get_key returns None for unsupported record types."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+
+        # Pass a string (neither dataclass nor dict) with a valid topic
+        key = sink._get_key("banking.transactions", "some_string_record")
+        assert key is None
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_get_entity_type(self, mock_producer_class: MagicMock) -> None:
+        """Test _get_entity_type extracts entity from topic name."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        sink = KafkaSink("localhost:9092")
+
+        assert sink._get_entity_type("banking.transactions") == "transactions"
+        assert sink._get_entity_type("banking.card-transactions") == "card_transactions"
+        assert sink._get_entity_type("simple_topic") == "simple_topic"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_cloudevents_subject_header(self, mock_producer_class: MagicMock) -> None:
+        """Test CloudEvents headers include ce_subject when key exists."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer_class.return_value = mock_producer
+
+        sink = KafkaSink("localhost:9092", use_cloudevents=True)
+
+        record = {"account_id": "acct-789", "amount": 100}
+        sink.send("banking.transactions", record)
+
+        call_kwargs = mock_producer.produce.call_args[1]
+        headers = call_kwargs["headers"]
+        header_names = [h[0] for h in headers]
+
+        assert "ce_subject" in header_names
+        ce_subject_value = next(h[1] for h in headers if h[0] == "ce_subject")
+        assert ce_subject_value == b"acct-789"
+
+    @patch("data_gen.sinks.kafka.Producer")
+    def test_send_with_avro_serializer(self, mock_producer_class: MagicMock) -> None:
+        """Test send() uses Avro serializer when available."""
+        from data_gen.sinks.kafka import KafkaSink
+
+        mock_producer = MagicMock()
+        mock_producer_class.return_value = mock_producer
+
+        sink = KafkaSink("localhost:9092", use_cloudevents=False)
+
+        # Inject a mock Avro serializer
+        mock_serializer = MagicMock(return_value=b"avro-bytes")
+        sink._avro_serializers["transactions"] = mock_serializer
+
+        record = {"account_id": "acct-001", "amount": Decimal("100.00")}
+        sink.send("banking.transactions", record)
+
+        # Avro serializer should have been called
+        mock_serializer.assert_called_once()
+        call_kwargs = mock_producer.produce.call_args[1]
+        assert call_kwargs["value"] == b"avro-bytes"
 
 
 class TestSinksInit:

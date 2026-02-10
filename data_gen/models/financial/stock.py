@@ -4,25 +4,34 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from data_gen.models.financial.enums import (
+    OrderType,
+    StockSector,
+    StockSegment,
+    TradeStatus,
+    TradeType,
+)
+
 
 @dataclass
 class Stock:
     """B3 Stock entity.
 
-    Represents a stock listed on B3 (Brasil, Bolsa, Balcão).
+    Represents a stock listed on B3 (Brasil, Bolsa, Balcao).
     Brazilian stocks use ticker codes like PETR4, VALE3, ITUB4.
     """
 
     stock_id: str
     ticker: str  # B3 ticker (e.g., PETR4, VALE3, ITUB4)
     company_name: str
-    sector: str  # e.g., ENERGY, FINANCE, MINING, RETAIL
-    segment: str  # e.g., NOVO_MERCADO, N1, N2, TRADICIONAL
+    sector: StockSector
+    segment: StockSegment
     current_price: Decimal
     currency: str  # BRL
     isin: str  # International Securities Identification Number
     lot_size: int  # Standard lot (usually 100)
     created_at: datetime
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing
 
 
@@ -37,15 +46,16 @@ class Trade:
     account_id: str  # Investment account (INVESTIMENTOS)
     stock_id: str
     ticker: str  # Denormalized for convenience
-    trade_type: str  # BUY, SELL
+    trade_type: TradeType
     quantity: int  # Number of shares
     price_per_share: Decimal
     total_amount: Decimal  # quantity * price_per_share
     fees: Decimal  # Brokerage + B3 fees + taxes
     net_amount: Decimal  # total_amount +/- fees
-    order_type: str  # MARKET, LIMIT, STOP
-    status: str  # PENDING, EXECUTED, CANCELLED, PARTIALLY_FILLED
+    order_type: OrderType
+    status: TradeStatus
     executed_at: datetime
     settlement_date: datetime  # T+2 in Brazil
     created_at: datetime | None = None  # Record creation timestamp
+    updated_at: datetime | None = None
     incremental_id: int = 0  # Sequential ID for incremental processing

@@ -6,6 +6,12 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from data_gen.models.financial import Installment, Transaction
+from data_gen.models.financial.enums import (
+    Direction,
+    InstallmentStatus,
+    TransactionStatus,
+    TransactionType,
+)
 
 
 @dataclass
@@ -74,7 +80,7 @@ class PaymentBehavior:
             if behavior == "good":
                 # Pays on time or within 3 days
                 paid_date = inst.due_date + timedelta(days=random.randint(0, 3))
-                status = "PAID"
+                status = InstallmentStatus.PAID
                 paid_amount = inst.total_amount
                 consecutive_missed = 0
 
@@ -82,10 +88,10 @@ class PaymentBehavior:
                 # 80% on time, 20% late
                 if random.random() < 0.8:
                     paid_date = inst.due_date + timedelta(days=random.randint(0, 5))
-                    status = "PAID"
+                    status = InstallmentStatus.PAID
                 else:
                     paid_date = inst.due_date + timedelta(days=random.randint(10, 30))
-                    status = "PAID"
+                    status = InstallmentStatus.PAID
                 paid_amount = inst.total_amount
                 consecutive_missed = 0
 
@@ -93,15 +99,15 @@ class PaymentBehavior:
                 # Always pays but usually late
                 days_late = random.randint(5, 45)
                 paid_date = inst.due_date + timedelta(days=days_late)
-                status = "PAID" if days_late < 90 else "LATE"
+                status = InstallmentStatus.PAID if days_late < 90 else InstallmentStatus.LATE
                 paid_amount = inst.total_amount
-                consecutive_missed = 0 if status == "PAID" else consecutive_missed + 1
+                consecutive_missed = 0 if status == InstallmentStatus.PAID else consecutive_missed + 1
 
             else:  # defaulter
                 # Pays first few, then stops
                 if inst.installment_number <= random.randint(2, 6):
                     paid_date = inst.due_date + timedelta(days=random.randint(0, 15))
-                    status = "PAID"
+                    status = InstallmentStatus.PAID
                     paid_amount = inst.total_amount
                     consecutive_missed = 0
                 else:
@@ -109,9 +115,9 @@ class PaymentBehavior:
                     paid_amount = None
                     consecutive_missed += 1
                     if consecutive_missed >= 3:
-                        status = "DEFAULT"
+                        status = InstallmentStatus.DEFAULT
                     else:
-                        status = "LATE"
+                        status = InstallmentStatus.LATE
 
             result.append(
                 Installment(
@@ -179,14 +185,14 @@ class FraudPatternGenerator:
             tx = Transaction(
                 transaction_id=f"fraud-vel-{base_transaction.transaction_id}-{i}",
                 account_id=base_transaction.account_id,
-                transaction_type="PIX",
+                transaction_type=TransactionType.PIX,
                 amount=Decimal(str(round(random.uniform(500, 5000), 2))),
-                direction="DEBIT",
+                direction=Direction.DEBIT,
                 counterparty_key=f"fraud-key-{i}",
                 counterparty_name=f"Suspeito {i}",
                 description="Pix - Transferência",
                 timestamp=base_time + timedelta(minutes=random.randint(0, window_minutes)),
-                status="COMPLETED",
+                status=TransactionStatus.COMPLETED,
             )
             transactions.append(tx)
 
@@ -203,12 +209,12 @@ class FraudPatternGenerator:
             account_id=base_transaction.account_id,
             transaction_type=base_transaction.transaction_type,
             amount=base_transaction.amount * Decimal(str(multiplier)),
-            direction="DEBIT",
+            direction=Direction.DEBIT,
             counterparty_key=base_transaction.counterparty_key,
             counterparty_name=base_transaction.counterparty_name,
             description=base_transaction.description,
             timestamp=base_transaction.timestamp,
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
         )
 
     def inject_night_activity(
@@ -225,14 +231,14 @@ class FraudPatternGenerator:
         return Transaction(
             transaction_id=f"fraud-night-{base_transaction.transaction_id}",
             account_id=base_transaction.account_id,
-            transaction_type="WITHDRAW",
+            transaction_type=TransactionType.WITHDRAW,
             amount=Decimal(str(round(random.uniform(1000, 5000), 2))),
-            direction="DEBIT",
+            direction=Direction.DEBIT,
             counterparty_key=None,
             counterparty_name=None,
             description="Saque ATM - Horário Incomum",
             timestamp=night_time,
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
         )
 
     def inject_new_payee_large_amount(
@@ -245,14 +251,14 @@ class FraudPatternGenerator:
         return Transaction(
             transaction_id=f"fraud-newpayee-{base_transaction.transaction_id}",
             account_id=base_transaction.account_id,
-            transaction_type="PIX",
+            transaction_type=TransactionType.PIX,
             amount=Decimal(str(round(large_amount, 2))),
-            direction="DEBIT",
+            direction=Direction.DEBIT,
             counterparty_key=f"new-payee-{random.randint(10000, 99999)}",
             counterparty_name=f"Novo Destinatário {random.randint(1, 100)}",
             description="Pix - Primeiro Pagamento",
             timestamp=base_transaction.timestamp,
-            status="COMPLETED",
+            status=TransactionStatus.COMPLETED,
         )
 
     def inject_round_amounts(
@@ -269,14 +275,14 @@ class FraudPatternGenerator:
             tx = Transaction(
                 transaction_id=f"fraud-round-{base_transaction.transaction_id}-{i}",
                 account_id=base_transaction.account_id,
-                transaction_type="PIX",
+                transaction_type=TransactionType.PIX,
                 amount=Decimal(str(amount)),
-                direction="DEBIT",
+                direction=Direction.DEBIT,
                 counterparty_key=f"round-key-{i}",
                 counterparty_name=f"Destinatário {i}",
                 description="Pix - Valor Redondo",
                 timestamp=base_transaction.timestamp + timedelta(hours=i),
-                status="COMPLETED",
+                status=TransactionStatus.COMPLETED,
             )
             transactions.append(tx)
 

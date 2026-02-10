@@ -13,6 +13,7 @@ from data_gen.config import (
     KafkaConfig,
     OutputConfig,
     PostgresConfig,
+    ScenarioConfig,
     StreamConfig,
 )
 from data_gen.logging import JsonFormatter, get_logger, setup_logging
@@ -167,6 +168,7 @@ class TestDataGenConfig:
         assert isinstance(config.stream, StreamConfig)
         assert config.seed is None
         assert config.log_level == "INFO"
+        assert config.country_weights is None
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
@@ -203,6 +205,7 @@ class TestDataGenConfig:
             "TOPIC_PREFIX",
             "SEED",
             "LOG_LEVEL",
+            "COUNTRY_WEIGHTS",
         ]
 
         # Save and clear env vars
@@ -219,6 +222,7 @@ class TestDataGenConfig:
             assert config.postgres.host == "localhost"
             assert config.seed is None
             assert config.log_level == "INFO"
+            assert config.country_weights is None
         finally:
             # Restore env vars
             for k, v in saved.items():
@@ -273,6 +277,85 @@ class TestDataGenConfig:
                     os.environ[k] = v
                 elif k in os.environ:
                     del os.environ[k]
+
+
+    def test_from_env_country_weights(self) -> None:
+        """Test COUNTRY_WEIGHTS parsed from env."""
+        saved = os.environ.get("COUNTRY_WEIGHTS")
+
+        try:
+            os.environ["COUNTRY_WEIGHTS"] = '{"BR": 0.5, "US": 0.3, "DE": 0.2}'
+            config = DataGenConfig.from_env()
+            assert config.country_weights == {"BR": 0.5, "US": 0.3, "DE": 0.2}
+        finally:
+            if saved is not None:
+                os.environ["COUNTRY_WEIGHTS"] = saved
+            elif "COUNTRY_WEIGHTS" in os.environ:
+                del os.environ["COUNTRY_WEIGHTS"]
+
+
+class TestScenarioConfig:
+    """Tests for ScenarioConfig."""
+
+    def test_default_values(self) -> None:
+        """Test default configuration values."""
+        config = ScenarioConfig(name="test_scenario")
+
+        assert config.name == "test_scenario"
+        assert config.num_customers == 100
+        assert config.transactions_per_customer == 50
+        assert config.start_date is None
+        assert config.end_date is None
+        assert config.enable_fraud_patterns is False
+        assert config.fraud_rate == 0.05
+        assert config.enable_poison_pills is False
+        assert config.poison_pill_rate == 0.01
+        assert config.labels == {}
+
+    def test_custom_values(self) -> None:
+        """Test custom configuration values."""
+        from datetime import datetime
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 12, 31)
+
+        config = ScenarioConfig(
+            name="fraud_detection",
+            num_customers=500,
+            transactions_per_customer=100,
+            start_date=start,
+            end_date=end,
+            enable_fraud_patterns=True,
+            fraud_rate=0.10,
+            enable_poison_pills=True,
+            poison_pill_rate=0.05,
+            labels={"environment": "staging"},
+        )
+
+        assert config.name == "fraud_detection"
+        assert config.num_customers == 500
+        assert config.transactions_per_customer == 100
+        assert config.start_date == start
+        assert config.end_date == end
+        assert config.enable_fraud_patterns is True
+        assert config.fraud_rate == 0.10
+        assert config.enable_poison_pills is True
+        assert config.poison_pill_rate == 0.05
+        assert config.labels == {"environment": "staging"}
+
+    def test_datagen_config_has_scenario(self) -> None:
+        """Test that DataGenConfig includes optional scenario field."""
+        config = DataGenConfig()
+        assert config.scenario is None
+
+    def test_datagen_config_with_scenario(self) -> None:
+        """Test DataGenConfig with ScenarioConfig."""
+        scenario = ScenarioConfig(name="customer_360", num_customers=200)
+        config = DataGenConfig(scenario=scenario)
+
+        assert config.scenario is not None
+        assert config.scenario.name == "customer_360"
+        assert config.scenario.num_customers == 200
 
 
 class TestSetupLogging:

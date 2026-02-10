@@ -1,35 +1,43 @@
 """Customer generator for financial domain."""
 
+from __future__ import annotations
+
 import random
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
+from data_gen.generators.address import AddressFactory, CountryDistribution
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.base import Address
 from data_gen.models.financial import Customer
+from data_gen.models.financial.enums import EmploymentStatus
 
 
-class CustomerGenerator:
+class CustomerGenerator(BaseGenerator):
     """Generate synthetic customer data."""
 
-    EMPLOYMENT_STATUS = ["EMPLOYED", "SELF_EMPLOYED", "RETIRED", "UNEMPLOYED"]
+    EMPLOYMENT_STATUS = list(EmploymentStatus)
     EMPLOYMENT_WEIGHTS = [0.60, 0.20, 0.12, 0.08]
 
     # Income ranges by employment status (monthly, BRL)
     INCOME_RANGES = {
-        "EMPLOYED": (2000, 30000),
-        "SELF_EMPLOYED": (3000, 50000),
-        "RETIRED": (1500, 15000),
-        "UNEMPLOYED": (0, 2000),
+        EmploymentStatus.EMPLOYED: (2000, 30000),
+        EmploymentStatus.SELF_EMPLOYED: (3000, 50000),
+        EmploymentStatus.RETIRED: (1500, 15000),
+        EmploymentStatus.UNEMPLOYED: (0, 2000),
     }
 
-    def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+    def __init__(
+        self,
+        seed: int | None = None,
+        country_distribution: CountryDistribution | None = None,
+    ) -> None:
+        super().__init__(seed)
+        self._address_factory = AddressFactory(
+            distribution=country_distribution,
+            seed=seed,
+        )
 
     def generate(self) -> Customer:
         """Generate a single customer.
@@ -73,11 +81,11 @@ class CustomerGenerator:
 
         # Credit score based on income and employment
         base_score = 500
-        if employment == "EMPLOYED":
+        if employment == EmploymentStatus.EMPLOYED:
             base_score += 100
-        elif employment == "SELF_EMPLOYED":
+        elif employment == EmploymentStatus.SELF_EMPLOYED:
             base_score += 50
-        elif employment == "RETIRED":
+        elif employment == EmploymentStatus.RETIRED:
             base_score += 80
 
         # Higher income = better score (simplified)
@@ -102,13 +110,5 @@ class CustomerGenerator:
         )
 
     def _generate_address(self) -> Address:
-        """Generate a Brazilian address."""
-        return Address(
-            street=self.fake.street_name(),
-            number=str(random.randint(1, 9999)),
-            neighborhood=self.fake.bairro(),
-            city=self.fake.city(),
-            state=self.fake.estado_sigla(),
-            postal_code=self.fake.postcode(),
-            complement=random.choice(["", "", "", f"Apto {random.randint(1, 500)}"]),
-        )
+        """Generate an address using the configured country distribution."""
+        return self._address_factory.generate()

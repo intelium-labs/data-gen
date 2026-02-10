@@ -1,0 +1,5 @@
+# Core dependencies
+faker>=24.0.0
+confluent-kafka[avro]>=2.3.0
+psycopg[binary]>=3.1.0
+tqdm>=4.65.0

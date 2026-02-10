@@ -78,8 +78,10 @@ O Data-Gen suporta múltiplos destinos de dados (sinks) para diferentes casos de
 | Documento | Descrição |
 |-----------|-----------|
 | [Catálogo de Dados](docs/data-catalog.md) | Referência completa de todos os datasets, campos e lógica de geração |
-| [Ingestão de Dados](docs/data-ingestion.md) | Como carregar dados no PostgreSQL e Kafka |
-| [Infraestrutura Docker](docs/docker.md) | Setup do Confluent Platform e configurações |
+| [Ingestão de Dados](docs/data-ingestion.md) | Como carregar dados no PostgreSQL e Kafka (CLI, performance, scripts) |
+| [Infraestrutura Docker](docs/docker.md) | Setup do Confluent Platform, Control Center e PostgreSQL |
+| [Setup no Windows](docs/windows-setup.md) | Guia para rodar no Windows com Docker Desktop e WSL2 |
+| [Roadmap v2](docs/roadmap-v2.md) | Poison pills, padrões realistas, novos produtos e interface TUI |
 
 ---
 
@@ -127,14 +129,16 @@ print(f"Accounts: {len(store.accounts)}")
 
 ```bash
 # Iniciar infraestrutura
-cd docker/
-docker-compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 # Carregar 500 clientes no PostgreSQL e Kafka
-python3 scripts/load_data.py --customers 500 --create-topics
+python scripts/load_data.py --customers 500 --create-topics --truncate
 
-# Carregar 2000 clientes
-python3 scripts/load_data.py --customers 2000 --seed 2024
+# Carregar 10K clientes (modo rápido auto-habilitado: COPY + BULK + streaming)
+python scripts/load_data.py --customers 10000 --create-topics --truncate
+
+# Carga paralela para 100K+ clientes
+python scripts/load_data_parallel.py --customers 100000 --create-topics --truncate
 ```
 
 ---
@@ -183,25 +187,25 @@ data-gen/
 ├── data_gen/
 │   ├── models/              # Modelos de domínio (dataclasses)
 │   │   ├── base.py          # Tipos compartilhados (Address, Event)
-│   │   ├── financial/       # Domínio financeiro
-│   │   ├── retail/          # Domínio varejo (futuro)
-│   │   └── ecommerce/       # Domínio e-commerce (futuro)
+│   │   └── financial/       # Domínio financeiro (10 entidades)
 │   ├── generators/          # Geradores de dados
-│   │   ├── financial/       # Geradores financeiros
-│   │   ├── retail/          # Geradores varejo (futuro)
-│   │   └── ecommerce/       # Geradores e-commerce (futuro)
+│   │   └── financial/       # Geradores financeiros
 │   ├── store/               # Data store in-memory com validação de FK
 │   ├── sinks/               # Destinos de saída
-│   │   ├── kafka.py         # Apache Kafka + Schema Registry
-│   │   ├── postgres.py      # PostgreSQL
+│   │   ├── kafka.py         # Apache Kafka + Avro + Schema Registry
+│   │   ├── postgres.py      # PostgreSQL (COPY + parallel loading)
 │   │   ├── json_file.py     # Arquivos JSON
-│   │   ├── mongodb.py       # MongoDB (futuro)
-│   │   └── filesystem.py    # Parquet/CSV (futuro)
-│   └── scenarios/           # Casos de uso end-to-end
+│   │   ├── console.py       # Console (debug)
+│   │   └── serialization.py # Serialização compartilhada
+│   └── scenarios/           # Cenários pré-construídos (fraud, loan, 360)
 ├── docs/                    # Documentação em pt-BR
-├── docker/                  # Docker Compose (Confluent Platform)
-├── scripts/                 # Scripts utilitários
-└── tests/                   # Testes unitários e integração
+├── docker/                  # Docker Compose (Confluent Platform + PostgreSQL)
+│   └── config/              # Configs do Control Center (Prometheus, alertas)
+├── scripts/
+│   ├── load_data.py         # Carga padrão (PostgreSQL + Kafka)
+│   ├── load_data_parallel.py # Carga paralela (multiprocessing)
+│   └── benchmark.py         # Benchmark de performance
+└── tests/                   # Testes unitários (390 tests, 99% coverage)
 ```
 
 ---
@@ -223,18 +227,23 @@ ruff check data_gen tests
 mypy data_gen
 ```
 
-## Docker (Kafka + PostgreSQL)
+## Docker (Confluent Platform + PostgreSQL)
 
 ```bash
-# Subir toda a stack Confluent Platform
+# Subir toda a stack (Broker, Schema Registry, Connect, ksqlDB, Control Center, PostgreSQL)
 docker compose -f docker/docker-compose.yml up -d
 
 # Verificar status
-docker-compose -f docker/docker-compose.yml ps
+docker compose -f docker/docker-compose.yml ps
 
-# Acessar Control Center
+# Acessar Control Center Next-Gen
 open http://localhost:9021
+
+# Parar e remover volumes (reset total)
+docker compose -f docker/docker-compose.yml down -v
 ```
+
+Veja [Infraestrutura Docker](docs/docker.md) para detalhes completos.
 
 ---
 

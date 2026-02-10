@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.financial import CardTransaction, CreditCard, Customer
+from data_gen.models.financial.enums import CardBrand, CardStatus, CardTransactionStatus
 
 
-class CreditCardGenerator:
+class CreditCardGenerator(BaseGenerator):
     """Generate synthetic credit cards and transactions."""
 
-    BRANDS = ["VISA", "MASTERCARD", "ELO"]
+    BRANDS = list(CardBrand)
     BRAND_WEIGHTS = [0.45, 0.40, 0.15]
 
     # MCC codes and categories
@@ -33,10 +33,7 @@ class CreditCardGenerator:
     }
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate_for_customer(
         self,
@@ -73,7 +70,7 @@ class CreditCardGenerator:
             credit_limit=Decimal(str(credit_limit)),
             available_limit=Decimal(str(credit_limit)),  # Starts with full limit
             due_day=random.randint(1, 28),
-            status="ACTIVE",
+            status=CardStatus.ACTIVE,
             created_at=created_at,
         )
 
@@ -125,7 +122,7 @@ class CreditCardGenerator:
             installments = 1
 
         # 95% approved
-        status = "APPROVED" if random.random() < 0.95 else "DECLINED"
+        status = CardTransactionStatus.APPROVED if random.random() < 0.95 else CardTransactionStatus.DECLINED
 
         return CardTransaction(
             transaction_id=self.fake.uuid4(),
@@ -165,7 +162,7 @@ class CreditCardGenerator:
             credit_limit=Decimal(str(credit_limit)),
             available_limit=Decimal(str(credit_limit * random.uniform(0.3, 1.0))),
             due_day=random.randint(1, 28),
-            status="ACTIVE",
+            status=CardStatus.ACTIVE,
             created_at=datetime.now() - timedelta(days=random.randint(0, 365)),
         )
 
@@ -188,16 +185,13 @@ class CreditCardGenerator:
         return f"{prefix} {self.fake.last_name()}"
 
 
-class CardTransactionGenerator:
+class CardTransactionGenerator(BaseGenerator):
     """Generate credit card transactions."""
 
     MCC_CATEGORIES = CreditCardGenerator.MCC_CATEGORIES
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
 
     def generate(self, card_id: str) -> CardTransaction:
         """Generate a card transaction.
@@ -226,7 +220,7 @@ class CardTransactionGenerator:
         else:
             installments = 1
 
-        status = "APPROVED" if random.random() < 0.95 else "DECLINED"
+        status = CardTransactionStatus.APPROVED if random.random() < 0.95 else CardTransactionStatus.DECLINED
 
         return CardTransaction(
             transaction_id=self.fake.uuid4(),

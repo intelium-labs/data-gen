@@ -1,16 +1,20 @@
 """Loan portfolio scenario for generating loan data with payment behavior."""
 
+from __future__ import annotations
+
 import logging
 import random
 from datetime import date, timedelta
 from typing import Any
 
+from data_gen.config import ScenarioConfig
 from data_gen.generators.financial import (
     AccountGenerator,
     CustomerGenerator,
     LoanGenerator,
 )
 from data_gen.generators.financial.patterns import PaymentBehavior
+from data_gen.models.financial.enums import InstallmentStatus, LoanStatus, LoanType
 from data_gen.store.financial import FinancialDataStore
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,8 @@ class LoanPortfolioScenario:
         late_rate: float = 0.10,
         default_rate: float = 0.05,
         seed: int | None = None,
+        *,
+        config: ScenarioConfig | None = None,
     ) -> None:
         """Initialize loan portfolio scenario.
 
@@ -56,14 +62,24 @@ class LoanPortfolioScenario:
             Percentage of installments in default.
         seed : int | None
             Random seed for reproducibility.
+        config : ScenarioConfig | None
+            Optional scenario configuration. If provided, overrides
+            num_customers.
         """
-        self.num_customers = num_customers
+        if config is not None:
+            self.num_customers = config.num_customers
+            self.seed = seed
+            self.config = config
+        else:
+            self.num_customers = num_customers
+            self.seed = seed
+            self.config = None
+
         self.loan_penetration = loan_penetration
         self.housing_loan_rate = housing_loan_rate
         self.on_time_rate = on_time_rate
         self.late_rate = late_rate
         self.default_rate = default_rate
-        self.seed = seed
 
         if seed is not None:
             random.seed(seed)
@@ -113,7 +129,7 @@ class LoanPortfolioScenario:
         for i, customer in enumerate(loan_customers):
             if i < num_housing and customer.credit_score >= 650:
                 # Housing loan for higher credit score customers
-                loan_type = "HOUSING"
+                loan_type = LoanType.HOUSING
                 # Generate property for housing loan
                 from data_gen.generators.financial.loan import PropertyGenerator
 
@@ -122,7 +138,7 @@ class LoanPortfolioScenario:
                 self.store.add_property(prop)
                 property_id = prop.property_id
             else:
-                loan_type = "PERSONAL"
+                loan_type = LoanType.PERSONAL
                 property_id = None
 
             # Generate loan with installments
@@ -147,8 +163,8 @@ class LoanPortfolioScenario:
         logger.info(
             "Generated %d loans (%d housing, %d personal) with %d installments",
             len(self.store.loans),
-            sum(1 for l in self.store.loans.values() if l.loan_type == "HOUSING"),
-            sum(1 for l in self.store.loans.values() if l.loan_type == "PERSONAL"),
+            sum(1 for l in self.store.loans.values() if l.loan_type == LoanType.HOUSING),
+            sum(1 for l in self.store.loans.values() if l.loan_type == LoanType.PERSONAL),
             len(self.store.installments),
         )
 
@@ -165,23 +181,23 @@ class LoanPortfolioScenario:
                 continue
 
             # Check for defaults
-            defaults = [i for i in installments if i.status == "DEFAULT"]
+            defaults = [i for i in installments if i.status == InstallmentStatus.DEFAULT]
             if defaults:
-                loan.status = "DEFAULT"
+                loan.status = LoanStatus.DEFAULT
                 continue
 
             # Check if all paid
-            all_paid = all(i.status == "PAID" for i in installments)
+            all_paid = all(i.status == InstallmentStatus.PAID for i in installments)
             if all_paid:
-                loan.status = "PAID_OFF"
+                loan.status = LoanStatus.PAID_OFF
                 continue
 
             # Check for late payments
-            late = [i for i in installments if i.status == "LATE"]
+            late = [i for i in installments if i.status == InstallmentStatus.LATE]
             if len(late) >= 3:
-                loan.status = "DELINQUENT"
+                loan.status = LoanStatus.DELINQUENT
             else:
-                loan.status = "ACTIVE"
+                loan.status = LoanStatus.ACTIVE
 
     def export(self, sinks: list[Any]) -> None:
         """Export generated data to sinks.
@@ -231,6 +247,6 @@ class LoanPortfolioScenario:
             "average_interest_rate": float(avg_rate),
             "loan_status_distribution": status_counts,
             "installment_status_distribution": installment_status,
-            "housing_loans": sum(1 for l in loans if l.loan_type == "HOUSING"),
-            "personal_loans": sum(1 for l in loans if l.loan_type == "PERSONAL"),
+            "housing_loans": sum(1 for l in loans if l.loan_type == LoanType.HOUSING),
+            "personal_loans": sum(1 for l in loans if l.loan_type == LoanType.PERSONAL),
         }

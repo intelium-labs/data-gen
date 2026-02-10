@@ -5,20 +5,27 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Iterator
 
-from faker import Faker
-
-from data_gen.models.base import Address
+from data_gen.generators.address import AddressFactory, CountryDistribution
+from data_gen.generators.base import BaseGenerator
 from data_gen.models.financial import Customer, Installment, Loan, Property
+from data_gen.models.financial.enums import (
+    AmortizationSystem,
+    InstallmentStatus,
+    LoanStatus,
+    LoanType,
+    PropertyType,
+)
 
 
-class PropertyGenerator:
+class PropertyGenerator(BaseGenerator):
     """Generate synthetic properties for housing loans."""
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
+        self._address_factory = AddressFactory(
+            distribution=CountryDistribution.brazil_only(),
+            seed=seed,
+        )
 
     def generate(self) -> Property:
         """Generate a property.
@@ -32,41 +39,34 @@ class PropertyGenerator:
 
         return Property(
             property_id=self.fake.uuid4(),
-            property_type=random.choice(["APARTMENT", "HOUSE"]),
-            address=Address(
-                street=self.fake.street_name(),
-                number=str(random.randint(1, 9999)),
-                neighborhood=self.fake.bairro(),
-                city=self.fake.city(),
-                state=self.fake.estado_sigla(),
-                postal_code=self.fake.postcode(),
-            ),
+            property_type=random.choice([PropertyType.APARTMENT, PropertyType.HOUSE]),
+            address=self._address_factory.generate_brazilian(),
             appraised_value=Decimal(str(property_value)),
             area_sqm=random.uniform(40, 200),
             registration_number=f"{random.randint(10000, 99999)}.{random.randint(1, 999):03d}",
         )
 
 
-class LoanGenerator:
+class LoanGenerator(BaseGenerator):
     """Generate synthetic loans and installments."""
 
-    LOAN_TYPES = ["PERSONAL", "HOUSING", "VEHICLE"]
+    LOAN_TYPES = list(LoanType)
 
     # Interest rates by loan type and credit score range (monthly)
     INTEREST_RATES = {
-        "PERSONAL": {
+        LoanType.PERSONAL: {
             "excellent": (0.015, 0.025),  # 1.5-2.5%
             "good": (0.025, 0.04),  # 2.5-4%
             "fair": (0.04, 0.06),  # 4-6%
             "poor": (0.06, 0.08),  # 6-8%
         },
-        "HOUSING": {
+        LoanType.HOUSING: {
             "excellent": (0.007, 0.009),  # 0.7-0.9%
             "good": (0.009, 0.011),  # 0.9-1.1%
             "fair": (0.011, 0.012),  # 1.1-1.2%
             "poor": None,  # Usually rejected
         },
-        "VEHICLE": {
+        LoanType.VEHICLE: {
             "excellent": (0.012, 0.018),
             "good": (0.018, 0.025),
             "fair": (0.025, 0.035),
@@ -75,15 +75,16 @@ class LoanGenerator:
     }
 
     def __init__(self, seed: int | None = None) -> None:
-        self.fake = Faker("pt_BR")
-        if seed is not None:
-            Faker.seed(seed)
-            random.seed(seed)
+        super().__init__(seed)
+        self._address_factory = AddressFactory(
+            distribution=CountryDistribution.brazil_only(),
+            seed=seed,
+        )
 
     def generate_with_installments(
         self,
         customer_id: str,
-        loan_type: str = "PERSONAL",
+        loan_type: LoanType = LoanType.PERSONAL,
         property_id: str | None = None,
     ) -> tuple[Loan, list[Installment]]:
         """Generate a loan with installments.
@@ -92,7 +93,7 @@ class LoanGenerator:
         ----------
         customer_id : str
             Customer ID for the loan.
-        loan_type : str
+        loan_type : LoanType
             Loan type (PERSONAL, HOUSING, VEHICLE).
         property_id : str | None
             Property ID for housing loans.
@@ -103,21 +104,21 @@ class LoanGenerator:
             Generated loan and its installments.
         """
         # Generate loan parameters
-        if loan_type == "PERSONAL":
+        if loan_type == LoanType.PERSONAL:
             principal = Decimal(str(random.randint(5, 100) * 1000))
             term_months = random.choice([6, 12, 18, 24, 36, 48, 60])
             interest_rate = Decimal(str(round(random.uniform(0.02, 0.06), 4)))
-            amortization = "PRICE"
-        elif loan_type == "HOUSING":
+            amortization = AmortizationSystem.PRICE
+        elif loan_type == LoanType.HOUSING:
             principal = Decimal(str(random.randint(100, 1500) * 1000))
             term_months = random.choice([120, 180, 240, 300, 360])
             interest_rate = Decimal(str(round(random.uniform(0.007, 0.012), 4)))
-            amortization = random.choice(["SAC", "PRICE"])
+            amortization = random.choice(list(AmortizationSystem))
         else:  # VEHICLE
             principal = Decimal(str(random.randint(20, 150) * 1000))
             term_months = random.choice([12, 24, 36, 48, 60])
             interest_rate = Decimal(str(round(random.uniform(0.015, 0.035), 4)))
-            amortization = "PRICE"
+            amortization = AmortizationSystem.PRICE
 
         disbursement_date = (datetime.now() - timedelta(days=random.randint(30, 365))).date()
 
@@ -129,7 +130,7 @@ class LoanGenerator:
             interest_rate=interest_rate,
             term_months=term_months,
             amortization_system=amortization,
-            status="ACTIVE",
+            status=LoanStatus.ACTIVE,
             disbursement_date=disbursement_date,
             property_id=property_id,
             created_at=datetime.now() - timedelta(days=random.randint(30, 365)),
@@ -141,7 +142,7 @@ class LoanGenerator:
     def generate_for_customer(
         self,
         customer: Customer,
-        loan_type: str = "PERSONAL",
+        loan_type: LoanType = LoanType.PERSONAL,
         approval_date: datetime | None = None,
     ) -> tuple[Loan, Property | None, list[Installment]] | None:
         """Generate a loan for a customer if approved."""
@@ -166,19 +167,19 @@ class LoanGenerator:
         # Generate loan parameters
         interest_rate = Decimal(str(round(random.uniform(*rates), 4)))
 
-        if loan_type == "PERSONAL":
+        if loan_type == LoanType.PERSONAL:
             principal = self._generate_personal_loan_amount(customer.monthly_income)
             term_months = random.choice([6, 12, 18, 24, 36, 48, 60, 72])
-            amortization = "PRICE"
+            amortization = AmortizationSystem.PRICE
             prop = None
-        elif loan_type == "HOUSING":
+        elif loan_type == LoanType.HOUSING:
             principal, prop = self._generate_housing_loan(customer)
             term_months = random.choice([120, 180, 240, 300, 360])
-            amortization = random.choice(["SAC", "PRICE"])
+            amortization = random.choice(list(AmortizationSystem))
         else:  # VEHICLE
             principal = self._generate_vehicle_loan_amount(customer.monthly_income)
             term_months = random.choice([12, 24, 36, 48, 60])
-            amortization = "PRICE"
+            amortization = AmortizationSystem.PRICE
             prop = None
 
         # Loan dates
@@ -198,7 +199,7 @@ class LoanGenerator:
             interest_rate=interest_rate,
             term_months=term_months,
             amortization_system=amortization,
-            status="ACTIVE",
+            status=LoanStatus.ACTIVE,
             disbursement_date=disbursement_date,
             property_id=prop.property_id if prop else None,
             created_at=approval_date,
@@ -256,15 +257,8 @@ class LoanGenerator:
         # Create property
         prop = Property(
             property_id=self.fake.uuid4(),
-            property_type=random.choice(["APARTMENT", "HOUSE"]),
-            address=Address(
-                street=self.fake.street_name(),
-                number=str(random.randint(1, 9999)),
-                neighborhood=self.fake.bairro(),
-                city=self.fake.city(),
-                state=self.fake.estado_sigla(),
-                postal_code=self.fake.postcode(),
-            ),
+            property_type=random.choice([PropertyType.APARTMENT, PropertyType.HOUSE]),
+            address=self._address_factory.generate_brazilian(),
             appraised_value=Decimal(str(property_value)),
             area_sqm=random.uniform(40, 200),
             registration_number=f"{random.randint(10000, 99999)}.{random.randint(1, 999):03d}",
@@ -278,7 +272,7 @@ class LoanGenerator:
         rate = float(loan.interest_rate)
         n = loan.term_months
 
-        if loan.amortization_system == "PRICE":
+        if loan.amortization_system == AmortizationSystem.PRICE:
             # Fixed payment (PMT formula)
             if rate > 0:
                 pmt = principal * (rate * (1 + rate) ** n) / ((1 + rate) ** n - 1)
@@ -303,7 +297,7 @@ class LoanGenerator:
                     total_amount=Decimal(str(round(pmt, 2))),
                     paid_date=None,
                     paid_amount=None,
-                    status="PENDING",
+                    status=InstallmentStatus.PENDING,
                 )
         else:  # SAC
             # Fixed principal, decreasing payments
@@ -327,5 +321,5 @@ class LoanGenerator:
                     total_amount=Decimal(str(round(total, 2))),
                     paid_date=None,
                     paid_amount=None,
-                    status="PENDING",
+                    status=InstallmentStatus.PENDING,
                 )

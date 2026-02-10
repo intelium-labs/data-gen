@@ -1,9 +1,12 @@
 """Customer 360 scenario for complete customer view generation."""
 
+from __future__ import annotations
+
 import logging
 import random
 from typing import Any
 
+from data_gen.config import ScenarioConfig
 from data_gen.generators.financial import (
     AccountGenerator,
     CreditCardGenerator,
@@ -12,6 +15,7 @@ from data_gen.generators.financial import (
     TransactionGenerator,
 )
 from data_gen.generators.financial.credit_card import CardTransactionGenerator
+from data_gen.models.financial.enums import LoanStatus, LoanType
 from data_gen.store.financial import FinancialDataStore
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,8 @@ class Customer360Scenario:
         transactions_per_account: int = 30,
         card_transactions_per_card: int = 20,
         seed: int | None = None,
+        *,
+        config: ScenarioConfig | None = None,
     ) -> None:
         """Initialize customer 360 scenario.
 
@@ -56,14 +62,25 @@ class Customer360Scenario:
             Average transactions per credit card.
         seed : int | None
             Random seed for reproducibility.
+        config : ScenarioConfig | None
+            Optional scenario configuration. If provided, overrides
+            num_customers and transactions_per_account.
         """
-        self.num_customers = num_customers
+        if config is not None:
+            self.num_customers = config.num_customers
+            self.transactions_per_account = config.transactions_per_customer
+            self.seed = seed
+            self.config = config
+        else:
+            self.num_customers = num_customers
+            self.transactions_per_account = transactions_per_account
+            self.seed = seed
+            self.config = None
+
         self.accounts_per_customer = accounts_per_customer
         self.card_penetration = card_penetration
         self.loan_penetration = loan_penetration
-        self.transactions_per_account = transactions_per_account
         self.card_transactions_per_card = card_transactions_per_card
-        self.seed = seed
 
         if seed is not None:
             random.seed(seed)
@@ -142,7 +159,7 @@ class Customer360Scenario:
 
         # Maybe generate loan
         if random.random() < self.loan_penetration:
-            loan_type = random.choice(["PERSONAL", "VEHICLE"])
+            loan_type = random.choice([LoanType.PERSONAL, LoanType.VEHICLE])
             loan, installments = self._loan_gen.generate_with_installments(
                 customer_id=customer.customer_id,
                 loan_type=loan_type,
@@ -211,7 +228,7 @@ class Customer360Scenario:
 
         # Calculate risk indicators
         total_balance = sum(a.balance for a in accounts)
-        total_debt = sum(l.principal for l in loans if l.status == "ACTIVE")
+        total_debt = sum(l.principal for l in loans if l.status == LoanStatus.ACTIVE)
         debt_to_income = (
             float(total_debt) / float(customer.monthly_income)
             if customer.monthly_income > 0

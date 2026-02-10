@@ -80,6 +80,7 @@ Informações do cliente do banco.
 | `employment_status` | enum | Situação de emprego | `EMPLOYED` | Aleatório ponderado |
 | `credit_score` | int | Score de crédito (300-850) | `720` | Baseado na renda + aleatório |
 | `created_at` | timestamp | Data de cadastro | `2023-06-15T14:30:00` | Últimos 3 anos |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação, preenchido em mudanças de estado |
 
 **Distribuição de Situação de Emprego:**
 | Status | Peso | Descrição |
@@ -115,6 +116,7 @@ Conta bancária vinculada a um cliente.
 | `balance` | decimal(15,2) | Saldo atual | `15420.50` | Baseado na renda |
 | `status` | enum | Status da conta | `ACTIVE` | Sempre ACTIVE inicialmente |
 | `created_at` | timestamp | Data de abertura | `2023-07-20T10:00:00` | Após created_at do customer |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação |
 
 **Distribuição de Tipo de Conta:**
 | Tipo | Peso | Descrição |
@@ -152,6 +154,7 @@ Cartão de crédito emitido para um cliente.
 | `due_day` | int | Dia de vencimento | `15` | Aleatório 1-28 |
 | `status` | enum | Status do cartão | `ACTIVE` | Sempre ACTIVE |
 | `created_at` | timestamp | Data de emissão | `2023-08-01T...` | Após customer |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação |
 
 **Distribuição de Bandeira:**
 | Bandeira | Peso | Descrição |
@@ -181,6 +184,7 @@ Contrato de empréstimo com um cliente.
 | `disbursement_date` | date | Data de desembolso | `2024-01-15` | Após aprovação |
 | `property_id` | UUID | Garantia (imobiliário) | `prop-123-...` | FK para Property |
 | `created_at` | timestamp | Data da solicitação | `2024-01-10T...` | Antes do desembolso |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação |
 
 **Tipos de Empréstimo:**
 | Tipo | Faixa de Principal | Prazo | Taxa de Juros | Amortização |
@@ -202,7 +206,8 @@ PENDING → APPROVED → ACTIVE → PAID_OFF
               ↓
           REJECTED
 
-ACTIVE → DEFAULT (se 90+ dias em atraso)
+ACTIVE → DELINQUENT (se 3+ parcelas em atraso)
+ACTIVE → DEFAULT    (se 90+ dias em atraso)
 ```
 
 ---
@@ -288,6 +293,8 @@ Transações de conta bancária (Pix, TED, depósitos, etc.).
 | `status` | enum | Status da transação | `COMPLETED` | 98% completado |
 | `pix_e2e_id` | string | ID E2E do Pix | `E12345...` | Apenas para Pix |
 | `pix_key_type` | enum | Tipo de chave Pix | `CPF` | Apenas para Pix |
+| `created_at` | timestamp | Data de criação | `2024-03-15T14:23:45` | Timestamp de geração |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação |
 
 **Distribuição de Tipo de Transação:**
 | Tipo | Peso | Direção | Descrição |
@@ -337,6 +344,8 @@ Compras no cartão de crédito.
 | `status` | enum | Status da transação | `APPROVED` | 95% aprovado |
 | `location_city` | string | Cidade | `São Paulo` | Cidade do cliente |
 | `location_country` | string(2) | País | `BR` | Geralmente BR |
+| `created_at` | timestamp | Data de criação | `2024-03-15T19:45:00` | Timestamp de geração |
+| `updated_at` | timestamp? | Última atualização | `null` | Nulo na criação |
 
 **Códigos de Categoria de Estabelecimento (MCC):**
 | MCC | Categoria | Valor Médio | Peso |
@@ -543,6 +552,63 @@ customer1 = gen.generate()  # Sempre mesmo resultado com seed=42
 
 ---
 
+## Relacionamentos entre Sistemas
+
+### Mapa Completo de Relacionamentos
+
+O projeto separa dados em dois sistemas com integridade referencial garantida:
+
+```
+┌─────────────────────────────────────┐     ┌─────────────────────────────────────┐
+│          PostgreSQL                  │     │              Kafka                   │
+│       (dados mestres)                │     │        (event streams)               │
+│                                      │     │                                      │
+│  customers ──┬── accounts ───────────│─FK─►│── banking.transactions               │
+│              │                       │     │      (account_id)                     │
+│              ├── credit_cards ───────│─FK─►│── banking.card-transactions           │
+│              │                       │     │      (card_id)                         │
+│              └── loans ──────────────│─FK─►│── banking.installments                │
+│                    │                 │     │      (loan_id)                         │
+│                    └── properties    │     │                                      │
+│                                      │     │                                      │
+│  stocks ─────────────────────────────│─FK─►│── banking.trades                     │
+│                                      │     │      (account_id, stock_id)           │
+└─────────────────────────────────────┘     └─────────────────────────────────────┘
+```
+
+### Tabela de Referência Cruzada
+
+| Evento (Kafka) | Campo FK no Evento | Entidade Mestre (PostgreSQL) | Tipo de Validação |
+|---|---|---|---|
+| `banking.transactions` | `account_id` | `accounts` | FK simples |
+| `banking.card-transactions` | `card_id` | `credit_cards` | FK simples |
+| `banking.trades` | `account_id` | `accounts` | FK + tipo (INVESTIMENTOS) |
+| `banking.trades` | `stock_id` | `stocks` | FK simples |
+| `banking.installments` | `loan_id` | `loans` | FK simples |
+
+### Chaves de Mensagem Kafka
+
+Cada tópico usa o campo FK como chave de particionamento, garantindo que eventos relacionados vão para a mesma partição:
+
+| Tópico | Chave (Message Key) | Garantia |
+|--------|---------------------|----------|
+| `banking.transactions` | `account_id` | Todas as transações de uma conta na mesma partição |
+| `banking.card-transactions` | `card_id` | Todas as compras de um cartão na mesma partição |
+| `banking.trades` | `account_id` | Todas as operações de uma conta na mesma partição |
+| `banking.installments` | `loan_id` | Todas as parcelas de um empréstimo na mesma partição |
+
+### Como a Integridade é Garantida
+
+1. **Em memória**: O `FinancialDataStore` valida cada FK no momento da geração via `add_*()`. Qualquer FK inválida lança `ReferentialIntegrityError`.
+
+2. **No PostgreSQL**: As tabelas são criadas com constraints `REFERENCES` e inseridas em ordem de FK (`customers → properties → stocks → accounts → credit_cards → loans`).
+
+3. **No Kafka**: Eventos são gerados após os dados mestres existirem no store, garantindo que todo `account_id`, `card_id`, `loan_id` e `stock_id` referenciado já foi validado.
+
+4. **Entre sistemas**: A **seed determinística** permite executar cargas separadas (Kafka primeiro, PostgreSQL depois) com o mesmo `--seed` e `--customers`, produzindo IDs idênticos em ambas as execuções.
+
+---
+
 ## Localização dos Arquivos
 
 | Arquivo | Descrição |
@@ -555,5 +621,8 @@ customer1 = gen.generate()  # Sempre mesmo resultado com seed=42
 | `data_gen/models/financial/loan.py` | Loan, Installment |
 | `data_gen/models/financial/property.py` | Property |
 | `data_gen/models/financial/stock.py` | Stock, Trade |
+| `data_gen/models/financial/enums.py` | Enums (StrEnum) para todos os campos categóricos |
 | `data_gen/generators/financial/` | Todos os geradores |
 | `data_gen/store/financial.py` | FinancialDataStore (validação FK) |
+| `data_gen/exceptions.py` | Exceções tipadas (ReferentialIntegrityError, etc.) |
+| `scripts/load_data.py` | Script de ingestão PostgreSQL + Kafka |
