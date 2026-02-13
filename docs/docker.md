@@ -314,6 +314,7 @@ SHOW TOPICS;
 CREATE STREAM transactions_stream (
   transaction_id VARCHAR,
   account_id VARCHAR KEY,
+  customer_id VARCHAR,
   transaction_type VARCHAR,
   amount DOUBLE,
   direction VARCHAR,
@@ -367,6 +368,91 @@ jdbc:postgresql://localhost:5432/datagen
 # Dentro da rede Docker
 jdbc:postgresql://postgres:5432/datagen
 ```
+
+## Cluster OSS Apache Kafka (3 Brokers)
+
+Para benchmarking de alta vazão, o projeto inclui um Docker Compose separado com 3 brokers Apache Kafka OSS (4.0.0, KRaft nativo). Não há conflito de portas com o Confluent Platform — ambos podem rodar simultaneamente.
+
+### Quick Start
+
+```bash
+# Iniciar cluster OSS (3 brokers + Schema Registry + PostgreSQL)
+docker compose -f docker/docker-compose.oss-kafka.yml up -d
+
+# Verificar status (aguardar todos healthy)
+docker compose -f docker/docker-compose.oss-kafka.yml ps
+
+# Parar e limpar
+docker compose -f docker/docker-compose.oss-kafka.yml down -v
+```
+
+### Serviços e Portas
+
+| Serviço | Container | Porta | Descrição |
+|---------|-----------|-------|-----------|
+| Kafka Broker 0 | oss-kafka-0 | 19092 | Broker + Controller (KRaft combined) |
+| Kafka Broker 1 | oss-kafka-1 | 19093 | Broker + Controller (KRaft combined) |
+| Kafka Broker 2 | oss-kafka-2 | 19094 | Broker + Controller (KRaft combined) |
+| Schema Registry | oss-schema-registry | 18081 | Confluent SR (funciona com Kafka OSS) |
+| PostgreSQL | oss-postgres | 15432 | Instância separada do PG |
+
+### Usando o Flag `--kafka-cluster`
+
+Os scripts `load_data.py` e `load_data_parallel.py` suportam o flag `--kafka-cluster` que auto-configura todas as conexões:
+
+```bash
+# Confluent Platform (1 broker) — comportamento padrão
+python scripts/load_data.py --customers 10000 --fast --create-topics --truncate --kafka-cluster cp
+
+# OSS (3 brokers) — auto-configura bootstrap, Schema Registry e PostgreSQL
+python scripts/load_data.py --customers 10000 --fast --create-topics --truncate --kafka-cluster oss
+```
+
+| Preset | Bootstrap | Schema Registry | PostgreSQL | Replication Factor |
+|--------|-----------|-----------------|------------|-------------------|
+| `cp` | localhost:9092 | http://localhost:8081 | localhost:5432 | 1 |
+| `oss` | localhost:19092,19093,19094 | http://localhost:18081 | localhost:15432 | 3 |
+
+### Verificar Tópicos
+
+```bash
+# Listar tópicos com detalhes de replicação
+docker exec oss-kafka-0 /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server kafka-0:9092 --describe
+
+# Esperado: RF=3, ISR=3 para todos os tópicos
+```
+
+### Rodar Ambos Simultaneamente
+
+Os dois clusters podem rodar ao mesmo tempo sem conflito de portas:
+
+```bash
+# Iniciar Confluent Platform
+docker compose -f docker/docker-compose.yml up -d
+
+# Iniciar OSS Kafka (3 brokers)
+docker compose -f docker/docker-compose.oss-kafka.yml up -d
+
+# Carregar dados no CP
+python scripts/load_data.py --customers 10000 --fast --create-topics --truncate --kafka-cluster cp
+
+# Carregar dados no OSS
+python scripts/load_data.py --customers 10000 --fast --create-topics --truncate --kafka-cluster oss
+```
+
+### Diferenças do Confluent Platform
+
+| Aspecto | Confluent Platform | OSS Apache Kafka |
+|---------|-------------------|------------------|
+| Imagem | `confluentinc/cp-server:8.1.1` | `apache/kafka:4.0.0` |
+| Brokers | 1 | 3 |
+| Replication Factor | 1 | 3 |
+| Min ISR | 1 | 2 |
+| Partições por Tópico | 6 | 6 (2 por broker) |
+| Licença | Confluent (trial) | Apache 2.0 |
+| Extras | Control Center, REST Proxy, ksqlDB, Connect | Apenas brokers + SR |
+| Caso de Uso | Desenvolvimento com ecossistema completo | Benchmarking de alta vazão |
 
 ## Troubleshooting
 
@@ -466,7 +552,17 @@ docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 | `POSTGRES_PASSWORD` | postgres | Senha do banco |
 | `POSTGRES_DB` | datagen | Nome do banco de dados |
 
-O PostgreSQL está configurado com flags de performance para bulk loading:
+O PostgreSQL está configurado com flags de performance para bulk loading e CDC (Change Data Capture):
+
+**Flags de CDC (Debezium)**:
+
+| Flag | Valor | Descrição |
+|------|-------|-----------|
+| `wal_level` | logical | Habilita decodificação lógica para Debezium CDC |
+| `max_wal_senders` | 3 | Permite conexões de replicação |
+| `max_replication_slots` | 3 | Permite criação de slots de replicação |
+
+**Flags de Performance**:
 
 | Flag | Valor | Descrição |
 |------|-------|-----------|
@@ -480,6 +576,8 @@ O PostgreSQL está configurado com flags de performance para bulk loading:
 | `checkpoint_timeout` | 1800s | 30min entre checkpoints |
 
 > **Aviso**: `fsync=off` e `full_page_writes=off` são seguros em containers de desenvolvimento. **Nunca use em produção** — pode causar perda de dados em crash.
+
+> **CDC**: Com `wal_level=logical`, o Debezium Connector pode capturar alterações em tempo real nas tabelas mestres do PostgreSQL e publicá-las no Kafka. Isso permite que dados mestres (customers, accounts, etc.) fluam automaticamente para tópicos Kafka via Connect.
 
 ### Control Center Next-Gen
 

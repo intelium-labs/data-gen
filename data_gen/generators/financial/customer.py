@@ -9,6 +9,7 @@ from typing import Iterator
 
 from data_gen.generators.address import AddressFactory, CountryDistribution
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.base import Address
 from data_gen.models.financial import Customer
 from data_gen.models.financial.enums import EmploymentStatus
@@ -32,11 +33,13 @@ class CustomerGenerator(BaseGenerator):
         self,
         seed: int | None = None,
         country_distribution: CountryDistribution | None = None,
+        pool: FakerPool | None = None,
     ) -> None:
-        super().__init__(seed)
+        super().__init__(seed, pool=pool)
         self._address_factory = AddressFactory(
             distribution=country_distribution,
             seed=seed,
+            pool=self.pool,
         )
 
     def generate(self) -> Customer:
@@ -97,11 +100,11 @@ class CustomerGenerator(BaseGenerator):
         created_at = datetime.now() - timedelta(days=days_ago)
 
         return Customer(
-            customer_id=self.fake.uuid4(),
-            cpf=self.fake.cpf(),
-            name=self.fake.name(),
-            email=self.fake.email(),
-            phone=self.fake.cellphone_number(),
+            customer_id=self.pool.uuid(),
+            cpf=self.pool.cpf(),
+            name=self.pool.name(),
+            email=self.pool.email(),
+            phone=self.pool.phone(),
             address=self._generate_address(),
             monthly_income=Decimal(str(round(income, 2))),
             employment_status=employment,

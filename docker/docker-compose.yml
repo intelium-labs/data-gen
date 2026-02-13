@@ -43,6 +43,10 @@ services:
       KAFKA_CONFLUENT_TELEMETRY_METRICS_COLLECTOR_INTERVAL_MS: "60000"
       KAFKA_CONFLUENT_TELEMETRY_REMOTECONFIG_CONFLUENT_ENABLED: "false"
       KAFKA_CONFLUENT_CONSUMER_LAG_EMITTER_ENABLED: "true"
+      # Single-broker overrides for internal Confluent topics
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_CLUSTER_LINK_METADATA_TOPIC_REPLICATION_FACTOR: 1
     volumes:
       - broker-data:/var/lib/kafka/data
     healthcheck:
@@ -250,8 +254,9 @@ services:
       -c maintenance_work_mem=128MB
       -c max_wal_size=1GB
       -c checkpoint_completion_target=0.9
-      -c wal_level=minimal
-      -c max_wal_senders=0
+      -c wal_level=logical
+      -c max_wal_senders=3
+      -c max_replication_slots=3
       -c synchronous_commit=off
       -c fsync=off
       -c full_page_writes=off

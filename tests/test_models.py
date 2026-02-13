@@ -159,6 +159,7 @@ class TestTransaction:
         transaction = Transaction(
             transaction_id="tx-001",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -183,6 +184,7 @@ class TestTransaction:
         transaction = Transaction(
             transaction_id="tx-002",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="TED",
             amount=Decimal("500.00"),
             direction="CREDIT",
@@ -204,6 +206,7 @@ class TestTransaction:
         transaction = Transaction(
             transaction_id="tx-003",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="WITHDRAW",
             amount=Decimal("200.00"),
             direction="DEBIT",
@@ -256,6 +259,7 @@ class TestCardTransaction:
         card_tx = CardTransaction(
             transaction_id="ctx-001",
             card_id="card-001",
+            customer_id="cust-001",
             merchant_name="Supermercado ABC",
             merchant_category="Supermercados",
             mcc_code="5411",
@@ -279,6 +283,7 @@ class TestCardTransaction:
         card_tx = CardTransaction(
             transaction_id="ctx-002",
             card_id="card-001",
+            customer_id="cust-001",
             merchant_name="Loja Eletrônicos",
             merchant_category="Eletrônicos",
             mcc_code="5732",
@@ -354,6 +359,7 @@ class TestInstallment:
         installment = Installment(
             installment_id="inst-001",
             loan_id="loan-001",
+            customer_id="cust-001",
             installment_number=1,
             due_date=due,
             principal_amount=Decimal("400.00"),
@@ -377,6 +383,7 @@ class TestInstallment:
         installment = Installment(
             installment_id="inst-002",
             loan_id="loan-001",
+            customer_id="cust-001",
             installment_number=2,
             due_date=due,
             principal_amount=Decimal("410.00"),

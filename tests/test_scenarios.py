@@ -143,6 +143,7 @@ class TestLoanPortfolioScenario:
             inst = Installment(
                 installment_id=f"inst-late-{i}",
                 loan_id=loan.loan_id,
+                customer_id=customer_id,
                 installment_number=i + 1,
                 due_date=(datetime.now() - timedelta(days=150 - i * 30)).date(),
                 principal_amount=Decimal("1666.67"),

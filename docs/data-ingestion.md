@@ -58,10 +58,14 @@ Cada evento no Kafka referencia uma entidade mestra no PostgreSQL. A integridade
 | Tópico Kafka | Campo FK | Tabela PostgreSQL | Validação |
 |---|---|---|---|
 | `banking.transactions` | `account_id` | `accounts` | Conta deve existir |
+| `banking.transactions` | `customer_id` | `customers` | Desnormalizado para stream joins |
 | `banking.card-transactions` | `card_id` | `credit_cards` | Cartão deve existir |
+| `banking.card-transactions` | `customer_id` | `customers` | Desnormalizado para stream joins |
 | `banking.trades` | `account_id` | `accounts` | Conta tipo INVESTIMENTOS |
+| `banking.trades` | `customer_id` | `customers` | Desnormalizado para stream joins |
 | `banking.trades` | `stock_id` | `stocks` | Ação deve existir |
 | `banking.installments` | `loan_id` | `loans` | Empréstimo deve existir |
+| `banking.installments` | `customer_id` | `customers` | Desnormalizado para stream joins |
 
 ### Cadeia de FKs no PostgreSQL
 
@@ -135,8 +139,13 @@ python scripts/load_data.py [OPÇÕES]
 | `--fast` | false | Modo rápido: COPY + BULK + streaming (auto-habilitado para 10K+ clientes) |
 | `--no-avro` | false | Desabilitar serialização Avro (usa JSON, mensagens ~3-4x maiores) |
 | `--retention-hours` | 8 | Retenção dos tópicos Kafka em horas |
+| `--stream` | false | Modo streaming em tempo real (taxa fixa de eventos/seg) |
+| `--duration` | — | Duração do streaming em segundos (obrigatório com `--stream`) |
+| `--rate` | 1000 | Taxa alvo de eventos por segundo (usado com `--stream`) |
 
 > **Dica**: O modo `--fast` é automaticamente habilitado para `--customers >= 10000`. Ele usa `MasterDataStore` (sem eventos em memória), `COPY` no PostgreSQL e `BULK` preset no Kafka.
+
+> **Streaming em tempo real**: Use `--stream --duration 3600` para simular ingestão contínua de eventos por 1 hora a 1000 eventos/seg. O modo `--stream` gera eventos intercalados (transações, cartão, trades, parcelas) com rate limiting via token bucket, simulando um fluxo de produção real.
 
 ### `load_data_parallel.py` — Carga Paralela (100K+ clientes)
 
@@ -247,6 +256,28 @@ Para testes de stream processing, ksqlDB ou consumidores:
 .venv/bin/python scripts/load_data.py \
   --customers 500 --seed 42 --skip-postgres --create-topics
 ```
+
+### Estratégia 5: Streaming em Tempo Real
+
+Para simular ingestão contínua de eventos a uma taxa fixa, semelhante a um ambiente de produção:
+
+```bash
+# 1 hora a 1000 eventos/seg (padrão) — ~3.6M eventos
+python scripts/load_data.py --stream --duration 3600 --create-topics --kafka-cluster oss
+
+# 10 minutos a 500 eventos/seg com 200 clientes de warm-up
+python scripts/load_data.py --stream --duration 600 --rate 500 --customers 200 --kafka-cluster cp
+
+# Teste rápido: 30 segundos a 100 eventos/seg
+python scripts/load_data.py --stream --duration 30 --rate 100 --create-topics --kafka-cluster oss
+```
+
+O modo streaming:
+- Gera master data (clientes, contas, cartões, etc.) como warm-up
+- Intercala os 4 tipos de evento: 50% transações, 30% cartão, 10% trades, 10% parcelas
+- Usa token bucket para controle preciso de taxa
+- Reporta progresso a cada 10 segundos (taxa real vs alvo)
+- Suporta shutdown gracioso via Ctrl+C
 
 ## Distribuição de Dados
 
@@ -390,20 +421,24 @@ sink = KafkaSink(config)
 
 ### Presets do Producer
 
-O sistema oferece 4 presets pré-configurados para diferentes cenários:
+O sistema oferece 5 presets pré-configurados para diferentes cenários:
 
 | Preset | `acks` | `batch_size` | `linger_ms` | `compression` | Caso de Uso |
 |--------|--------|-------------|-------------|---------------|-------------|
 | `RELIABLE` | `all` | 16KB | 5ms | snappy | Produção: sem perda de mensagens, idempotente |
 | `FAST` | `0` | 64KB | 50ms | snappy | Desenvolvimento: máxima velocidade, sem garantia |
-| `BULK` | `1` | 512KB | 100ms | lz4 | Carga em massa: batches grandes, fila de 500K msgs |
+| `STREAMING` | `1` | 32KB | 20ms | snappy | Streaming em tempo real: taxa controlada, acks do leader |
+| `BULK` | `0` | 1MB | 100ms | lz4 | Carga em massa: fire-and-forget, fila de 1M msgs / 2GB |
 | `EVENT_BY_EVENT` | `all` | 1 | 0ms | none | Debug: uma mensagem por vez |
 
 ```python
-from data_gen.sinks.kafka import KafkaSink, RELIABLE, FAST, BULK
+from data_gen.sinks.kafka import KafkaSink, RELIABLE, FAST, STREAMING, BULK
 
 # Produção — idempotente, sem duplicatas
 sink = KafkaSink(RELIABLE)
+
+# Streaming em tempo real — auto-usado pelo modo --stream
+sink = KafkaSink(STREAMING)
 
 # Carga em massa — auto-usado pelo modo --fast
 sink = KafkaSink(BULK)
@@ -412,7 +447,7 @@ sink = KafkaSink(BULK)
 sink = KafkaSink(FAST)
 ```
 
-> **Nota**: O preset `BULK` é automaticamente usado pelo modo `--fast`. Ele configura `enable.idempotence=false`, `acks=1` (leader only), batches de 512KB com compressão LZ4, e fila interna de 500K mensagens / 2GB.
+> **Nota**: O preset `BULK` é automaticamente usado pelo modo `--fast`. Configura `acks=0` (fire-and-forget), batches de 1MB com compressão LZ4, e fila interna de 1M mensagens / 2GB. O preset `STREAMING` é usado pelo modo `--stream` com `acks=1`, batches de 32KB e linger de 20ms.
 
 ### Resiliência do Producer
 

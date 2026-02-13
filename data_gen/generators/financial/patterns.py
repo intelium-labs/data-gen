@@ -123,6 +123,7 @@ class PaymentBehavior:
                 Installment(
                     installment_id=inst.installment_id,
                     loan_id=inst.loan_id,
+                    customer_id=inst.customer_id,
                     installment_number=inst.installment_number,
                     due_date=inst.due_date,
                     principal_amount=inst.principal_amount,
@@ -185,6 +186,7 @@ class FraudPatternGenerator:
             tx = Transaction(
                 transaction_id=f"fraud-vel-{base_transaction.transaction_id}-{i}",
                 account_id=base_transaction.account_id,
+                customer_id=base_transaction.customer_id,
                 transaction_type=TransactionType.PIX,
                 amount=Decimal(str(round(random.uniform(500, 5000), 2))),
                 direction=Direction.DEBIT,
@@ -207,6 +209,7 @@ class FraudPatternGenerator:
         return Transaction(
             transaction_id=f"fraud-amt-{base_transaction.transaction_id}",
             account_id=base_transaction.account_id,
+            customer_id=base_transaction.customer_id,
             transaction_type=base_transaction.transaction_type,
             amount=base_transaction.amount * Decimal(str(multiplier)),
             direction=Direction.DEBIT,
@@ -231,6 +234,7 @@ class FraudPatternGenerator:
         return Transaction(
             transaction_id=f"fraud-night-{base_transaction.transaction_id}",
             account_id=base_transaction.account_id,
+            customer_id=base_transaction.customer_id,
             transaction_type=TransactionType.WITHDRAW,
             amount=Decimal(str(round(random.uniform(1000, 5000), 2))),
             direction=Direction.DEBIT,
@@ -251,6 +255,7 @@ class FraudPatternGenerator:
         return Transaction(
             transaction_id=f"fraud-newpayee-{base_transaction.transaction_id}",
             account_id=base_transaction.account_id,
+            customer_id=base_transaction.customer_id,
             transaction_type=TransactionType.PIX,
             amount=Decimal(str(round(large_amount, 2))),
             direction=Direction.DEBIT,
@@ -275,6 +280,7 @@ class FraudPatternGenerator:
             tx = Transaction(
                 transaction_id=f"fraud-round-{base_transaction.transaction_id}-{i}",
                 account_id=base_transaction.account_id,
+                customer_id=base_transaction.customer_id,
                 transaction_type=TransactionType.PIX,
                 amount=Decimal(str(amount)),
                 direction=Direction.DEBIT,

@@ -1,7 +1,10 @@
 """Kafka sink for streaming data to Kafka topics."""
 
+import io
 import json
 import logging
+import os
+import struct
 import time
 import uuid
 from dataclasses import dataclass, fields, is_dataclass
@@ -49,6 +52,7 @@ AVRO_SCHEMAS = {
         "fields": [
             {"name": "transaction_id", "type": "string"},
             {"name": "account_id", "type": "string"},
+            {"name": "customer_id", "type": "string"},
             {"name": "transaction_type", "type": "string"},
             {"name": "amount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 15, "scale": 2}},
             {"name": "direction", "type": "string"},
@@ -59,6 +63,9 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "pix_e2e_id", "type": ["null", "string"], "default": None},
             {"name": "pix_key_type", "type": ["null", "string"], "default": None},
+            {"name": "location_lat", "type": ["null", "double"], "default": None},
+            {"name": "location_lon", "type": ["null", "double"], "default": None},
+            {"name": "created_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
             {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
@@ -69,6 +76,7 @@ AVRO_SCHEMAS = {
         "fields": [
             {"name": "transaction_id", "type": "string"},
             {"name": "card_id", "type": "string"},
+            {"name": "customer_id", "type": "string"},
             {"name": "merchant_name", "type": "string"},
             {"name": "merchant_category", "type": "string"},
             {"name": "mcc_code", "type": "string"},
@@ -78,6 +86,7 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "location_city", "type": ["null", "string"], "default": None},
             {"name": "location_country", "type": ["null", "string"], "default": None},
+            {"name": "created_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
             {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
@@ -88,6 +97,7 @@ AVRO_SCHEMAS = {
         "fields": [
             {"name": "trade_id", "type": "string"},
             {"name": "account_id", "type": "string"},
+            {"name": "customer_id", "type": "string"},
             {"name": "stock_id", "type": "string"},
             {"name": "ticker", "type": "string"},
             {"name": "trade_type", "type": "string"},
@@ -100,6 +110,7 @@ AVRO_SCHEMAS = {
             {"name": "status", "type": "string"},
             {"name": "executed_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
             {"name": "settlement_date", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+            {"name": "created_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
             {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
@@ -110,6 +121,7 @@ AVRO_SCHEMAS = {
         "fields": [
             {"name": "installment_id", "type": "string"},
             {"name": "loan_id", "type": "string"},
+            {"name": "customer_id", "type": "string"},
             {"name": "installment_number", "type": "int"},
             {"name": "due_date", "type": {"type": "int", "logicalType": "date"}},
             {"name": "principal_amount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 15, "scale": 2}},
@@ -118,10 +130,59 @@ AVRO_SCHEMAS = {
             {"name": "paid_date", "type": ["null", {"type": "int", "logicalType": "date"}], "default": None},
             {"name": "paid_amount", "type": ["null", {"type": "bytes", "logicalType": "decimal", "precision": 15, "scale": 2}], "default": None},
             {"name": "status", "type": "string"},
+            {"name": "created_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
             {"name": "updated_at", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": None},
         ],
     },
 }
+
+# Pre-encode static CloudEvents header values (computed once at module load)
+_CE_SPECVERSION_BYTES = CLOUDEVENTS_SPEC_VERSION.encode("utf-8")
+_CE_CONTENT_TYPE_BYTES = b"application/json"
+
+# Pre-encoded per-topic static headers: (ce_specversion, ce_type, ce_source, content-type)
+_STATIC_CE_HEADERS: dict[str, list[tuple[str, bytes]]] = {}
+for _entity, _event_type in EVENT_TYPES.items():
+    _source = SOURCE_URIS.get(_entity, f"/financial/banking/{_entity}")
+    _STATIC_CE_HEADERS[_entity] = [
+        ("ce_specversion", _CE_SPECVERSION_BYTES),
+        ("ce_type", _event_type.encode("utf-8")),
+        ("ce_source", _source.encode("utf-8")),
+        ("content-type", _CE_CONTENT_TYPE_BYTES),
+    ]
+
+# Epoch reference for date conversion
+_EPOCH_DATE = date(1970, 1, 1)
+
+# UUID pool for fast CloudEvents ce_id generation
+_UUID_POOL_SIZE = 4096
+_uuid_pool: list[bytes] = []
+_uuid_pool_idx = 0
+
+
+def _refill_uuid_pool() -> None:
+    """Batch-generate UUID bytes to avoid per-message syscalls."""
+    global _uuid_pool, _uuid_pool_idx
+    raw = os.urandom(16 * _UUID_POOL_SIZE)
+    _uuid_pool = [
+        uuid.UUID(bytes=raw[i:i + 16], version=4).hex.encode("ascii")
+        for i in range(0, len(raw), 16)
+    ]
+    _uuid_pool_idx = 0
+
+
+def _fast_uuid_bytes() -> bytes:
+    """Return a pre-generated UUID hex as bytes, refilling pool when exhausted."""
+    global _uuid_pool_idx
+    if _uuid_pool_idx >= len(_uuid_pool):
+        _refill_uuid_pool()
+    val = _uuid_pool[_uuid_pool_idx]
+    _uuid_pool_idx += 1
+    return val
+
+
+# Initialize the pool
+_refill_uuid_pool()
 
 
 @dataclass
@@ -169,12 +230,23 @@ EVENT_BY_EVENT = ProducerConfig(
 BULK = ProducerConfig(
     bootstrap_servers="localhost:9092",
     schema_registry_url=DEFAULT_SCHEMA_REGISTRY_URL,
-    acks="1",
-    batch_size=524288,  # 512KB
-    linger_ms=100,
+    acks="0",
+    batch_size=1048576,  # 1MB
+    linger_ms=100,  # 100ms — allows fuller batches with acks=0
     compression="lz4",
-    queue_buffering_max_messages=500000,
+    queue_buffering_max_messages=1000000,  # 1M
     queue_buffering_max_kbytes=2097152,  # 2GB
+)
+
+STREAMING = ProducerConfig(
+    bootstrap_servers="localhost:9092",
+    schema_registry_url=DEFAULT_SCHEMA_REGISTRY_URL,
+    acks="1",
+    batch_size=32768,  # 32KB — moderate batching for steady-state streaming
+    linger_ms=20,  # 20ms — accumulates ~20 events at 1000/sec per batch
+    compression="snappy",
+    queue_buffering_max_messages=500000,
+    queue_buffering_max_kbytes=1048576,  # 1GB
 )
 
 
@@ -201,6 +273,49 @@ class ProducerStats:
             return 0.0
         duration = self.end_time - self.start_time
         return self.sent / duration if duration > 0 else 0.0
+
+
+class FastAvroSerializer:
+    """Minimal Avro serializer that bypasses AvroSerializer per-message overhead.
+
+    Pre-computes the 5-byte schema ID prefix once during init, then directly
+    calls fastavro.schemaless_writer with a reusable buffer. Eliminates:
+    - subject_name_func call per message
+    - _get_reader_schema call per message
+    - _known_subjects set lookup per message
+    - _ContextStringIO allocation per message
+    - prefix_schema_id_serializer BytesIO concatenation per message
+    """
+
+    def __init__(
+        self,
+        schema_registry_client: Any,
+        schema_str: str,
+        subject_name: str,
+        avro_field_set: set[str],
+    ) -> None:
+        from confluent_kafka.schema_registry import Schema
+        from fastavro import parse_schema
+        from fastavro.write import schemaless_writer
+
+        self._schemaless_writer = schemaless_writer
+
+        # Register schema once and cache the 5-byte Confluent Wire Format prefix
+        schema_obj = Schema(schema_str, "AVRO")
+        registered = schema_registry_client.register_schema(subject_name, schema_obj)
+        self._prefix = struct.pack(">bI", 0, registered)
+        self._parsed_schema = parse_schema(json.loads(schema_str))
+        self._buffer = io.BytesIO()
+        self._field_set = avro_field_set
+
+    def serialize(self, avro_dict: dict) -> bytes:
+        """Serialize an already-converted Avro dict to bytes."""
+        buf = self._buffer
+        buf.seek(0)
+        buf.truncate()
+        buf.write(self._prefix)
+        self._schemaless_writer(buf, self._parsed_schema, avro_dict)
+        return buf.getvalue()
 
 
 class KafkaSink:
@@ -241,10 +356,18 @@ class KafkaSink:
         self.producer = self._create_producer()
         self.stats = ProducerStats()
         self._avro_serializers: dict[str, Any] = {}
+        self._fast_serializers: dict[str, FastAvroSerializer] = {}
         self._poll_interval = poll_interval
         self._since_last_poll = 0
         self._avro_field_cache: dict[str, set[str]] = {}
         self._entity_type_cache: dict[str, str | None] = {}
+
+        # Pre-cached CloudEvents static headers per topic
+        self._ce_static_cache: dict[str, list[tuple[str, bytes]]] = {}
+
+        # Cached timestamp for CloudEvents (updated every 1ms)
+        self._ce_timestamp_bytes: bytes = b""
+        self._ce_timestamp_updated: float = 0.0
 
         # Initialize Avro serializers if Schema Registry is configured
         if config.schema_registry_url:
@@ -264,6 +387,10 @@ class KafkaSink:
             "compression.type": self.config.compression,
             "queue.buffering.max.messages": self.config.queue_buffering_max_messages,
             "queue.buffering.max.kbytes": self.config.queue_buffering_max_kbytes,
+            # Disable Nagle's algorithm for lower latency batch sends
+            "socket.nagle.disable": True,
+            "socket.send.buffer.bytes": 1048576,  # 1MB socket send buffer
+            "message.send.max.retries": 0 if self.config.acks == "0" else self.config.retries,
         }
         if self.config.enable_idempotence:
             conf["enable.idempotence"] = True
@@ -281,15 +408,39 @@ class KafkaSink:
 
             for entity_type, schema in AVRO_SCHEMAS.items():
                 schema_str = json.dumps(schema)
+                # Pre-cache the field set for O(1) lookup during serialization
+                field_set = {f["name"] for f in schema["fields"]}
+                self._avro_field_cache[entity_type] = field_set
+
+                # Legacy AvroSerializer (kept for compatibility with write_stream/write_batch)
                 self._avro_serializers[entity_type] = AvroSerializer(
                     schema_registry_client,
                     schema_str,
                     to_dict=self._to_avro_dict,
                 )
-                # Pre-cache the field set for O(1) lookup during serialization
-                self._avro_field_cache[entity_type] = {
-                    f["name"] for f in schema["fields"]
+
+                # Fast serializer: bypasses per-message overhead
+                topic_map = {
+                    "transactions": "banking.transactions",
+                    "card_transactions": "banking.card-transactions",
+                    "trades": "banking.trades",
+                    "installments": "banking.installments",
                 }
+                topic_name = topic_map.get(entity_type, f"banking.{entity_type}")
+                subject_name = f"{topic_name}-value"
+                try:
+                    self._fast_serializers[entity_type] = FastAvroSerializer(
+                        schema_registry_client,
+                        schema_str,
+                        subject_name,
+                        field_set,
+                    )
+                except Exception:
+                    logger.debug(
+                        "FastAvroSerializer init failed for %s, using legacy",
+                        entity_type,
+                    )
+
             logger.info("Avro serializers initialized for: %s", list(AVRO_SCHEMAS.keys()))
         except ImportError:
             logger.warning(
@@ -309,7 +460,7 @@ class KafkaSink:
         if isinstance(value, datetime):
             return int(value.timestamp() * 1000)
         if isinstance(value, date):
-            return (value - date(1970, 1, 1)).days
+            return (value - _EPOCH_DATE).days
         return value
 
     def _to_avro_dict(self, obj: Any, ctx: SerializationContext) -> dict:
@@ -340,6 +491,19 @@ class KafkaSink:
 
         raise ValueError(f"Cannot convert {type(obj)} to Avro dict")
 
+    def _to_avro_dict_direct(self, obj: Any, field_set: set[str]) -> dict:
+        """Convert object to Avro dict without SerializationContext overhead."""
+        convert = self._convert_avro_value
+        if is_dataclass(obj):
+            return {
+                f.name: convert(getattr(obj, f.name))
+                for f in fields(obj)
+                if f.name in field_set
+            }
+        if isinstance(obj, dict):
+            return {k: convert(v) for k, v in obj.items() if k in field_set}
+        raise ValueError(f"Cannot convert {type(obj)} to Avro dict")
+
     def _get_avro_fields_cached(self, ctx: SerializationContext | None) -> set[str] | None:
         """Return cached set of field names for the Avro schema, or None."""
         if not ctx or not ctx.topic:
@@ -357,6 +521,12 @@ class KafkaSink:
         else:
             self.stats.delivered += 1
             logger.debug("Delivered to %s[%d]@%d", msg.topic(), msg.partition(), msg.offset())
+
+    def _error_only_callback(self, err: Any, msg: Any) -> None:
+        """Handle only error delivery reports (used in bulk mode)."""
+        if err:
+            self.stats.failed += 1
+            logger.error("Delivery failed: %s", err)
 
     def _get_key(self, topic: str, record: Any) -> str | None:
         """Extract message key from record based on topic."""
@@ -384,6 +554,16 @@ class KafkaSink:
         self._entity_type_cache[topic] = entity
         return entity
 
+    def _get_ce_timestamp_bytes(self) -> bytes:
+        """Return cached CloudEvents timestamp, updating every ~1ms."""
+        now = time.time()
+        if now - self._ce_timestamp_updated > 0.001:
+            dt = datetime.fromtimestamp(now, tz=timezone.utc)
+            ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+            self._ce_timestamp_bytes = ts.encode("utf-8")
+            self._ce_timestamp_updated = now
+        return self._ce_timestamp_bytes
+
     def _build_cloudevent_headers(
         self, topic: str, record: Any
     ) -> list[tuple[str, bytes]]:
@@ -402,29 +582,65 @@ class KafkaSink:
             List of header tuples (name, value) for Kafka.
         """
         entity_type = self._get_entity_type(topic)
-        event_type = EVENT_TYPES.get(
-            entity_type, f"com.financial.{entity_type}.created.v1"
-        )
-        source = SOURCE_URIS.get(
-            entity_type, f"/financial/banking/{entity_type}"
-        )
+
+        # Use pre-computed static headers per topic
+        static = self._ce_static_cache.get(entity_type)
+        if static is None:
+            static = _STATIC_CE_HEADERS.get(entity_type)
+            if static is None:
+                event_type = EVENT_TYPES.get(
+                    entity_type, f"com.financial.{entity_type}.created.v1"
+                )
+                source = SOURCE_URIS.get(
+                    entity_type, f"/financial/banking/{entity_type}"
+                )
+                static = [
+                    ("ce_specversion", _CE_SPECVERSION_BYTES),
+                    ("ce_type", event_type.encode("utf-8")),
+                    ("ce_source", source.encode("utf-8")),
+                    ("content-type", _CE_CONTENT_TYPE_BYTES),
+                ]
+            self._ce_static_cache[entity_type] = static
+
+        # Clone static headers and append variable parts
+        headers = list(static)
+        headers.append(("ce_id", _fast_uuid_bytes()))
+        headers.append(("ce_time", self._get_ce_timestamp_bytes()))
+
         subject = self._get_key(topic, record)
-
-        # ISO 8601 timestamp with milliseconds
-        now = datetime.now(timezone.utc)
-        timestamp = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
-
-        headers = [
-            ("ce_specversion", CLOUDEVENTS_SPEC_VERSION.encode("utf-8")),
-            ("ce_type", event_type.encode("utf-8")),
-            ("ce_source", source.encode("utf-8")),
-            ("ce_id", str(uuid.uuid4()).encode("utf-8")),
-            ("ce_time", timestamp.encode("utf-8")),
-            ("content-type", b"application/json"),
-        ]
-
         if subject:
             headers.append(("ce_subject", subject.encode("utf-8")))
+
+        return headers
+
+    def _build_cloudevent_headers_fast(
+        self, entity_type: str, key_bytes: bytes | None
+    ) -> list[tuple[str, bytes]]:
+        """Build CloudEvents headers without record inspection (for send_fast)."""
+        static = self._ce_static_cache.get(entity_type)
+        if static is None:
+            static = _STATIC_CE_HEADERS.get(entity_type)
+            if static is None:
+                event_type = EVENT_TYPES.get(
+                    entity_type, f"com.financial.{entity_type}.created.v1"
+                )
+                source = SOURCE_URIS.get(
+                    entity_type, f"/financial/banking/{entity_type}"
+                )
+                static = [
+                    ("ce_specversion", _CE_SPECVERSION_BYTES),
+                    ("ce_type", event_type.encode("utf-8")),
+                    ("ce_source", source.encode("utf-8")),
+                    ("content-type", _CE_CONTENT_TYPE_BYTES),
+                ]
+            self._ce_static_cache[entity_type] = static
+
+        headers = list(static)
+        headers.append(("ce_id", _fast_uuid_bytes()))
+        headers.append(("ce_time", self._get_ce_timestamp_bytes()))
+
+        if key_bytes:
+            headers.append(("ce_subject", key_bytes))
 
         return headers
 
@@ -467,6 +683,57 @@ class KafkaSink:
             # Internal queue full — drain delivery callbacks and retry once
             self.producer.poll(1.0)
             self.producer.produce(**produce_kwargs)
+
+        self.stats.sent += 1
+        self._since_last_poll += 1
+        if self._since_last_poll >= self._poll_interval:
+            self.producer.poll(0)
+            self._since_last_poll = 0
+
+    def send_fast(self, topic: str, record: Any) -> None:
+        """Send a single record with minimal overhead (bulk mode).
+
+        Uses FastAvroSerializer, pre-computed headers, and error-only callbacks.
+        Falls back to regular send() if fast serializer is not available.
+        """
+        entity_type = self._get_entity_type(topic)
+
+        # Try fast path: FastAvroSerializer + error-only callback
+        fast_ser = self._fast_serializers.get(entity_type) if entity_type else None
+        if fast_ser is None:
+            return self.send(topic, record)
+
+        # Serialize with FastAvroSerializer
+        avro_dict = self._to_avro_dict_direct(record, fast_ser._field_set)
+        value = fast_ser.serialize(avro_dict)
+
+        # Extract key — encode once, reuse for both Kafka key and CE header
+        key_field = self.KEY_FIELDS.get(topic)
+        key = getattr(record, key_field, None) if key_field and is_dataclass(record) else None
+        key_bytes = key.encode("utf-8") if key else None
+
+        # Build CloudEvents headers (pass pre-encoded key_bytes)
+        headers = None
+        if self.use_cloudevents:
+            headers = self._build_cloudevent_headers_fast(entity_type, key_bytes)
+
+        try:
+            self.producer.produce(
+                topic=topic,
+                key=key_bytes,
+                value=value,
+                headers=headers,
+                callback=self._error_only_callback,
+            )
+        except BufferError:
+            self.producer.poll(1.0)
+            self.producer.produce(
+                topic=topic,
+                key=key_bytes,
+                value=value,
+                headers=headers,
+                callback=self._error_only_callback,
+            )
 
         self.stats.sent += 1
         self._since_last_poll += 1
@@ -566,10 +833,13 @@ class KafkaSink:
         """
         timeout = min(300.0, 30.0 + self.stats.sent / 10000)
         self.flush(timeout)
+        # Compute delivered for error-only callback mode
+        delivered = self.stats.delivered
+        if delivered == 0 and self.stats.sent > 0 and self.stats.failed < self.stats.sent:
+            delivered = self.stats.sent - self.stats.failed
         logger.info(
             "Kafka sink closed: sent=%d, delivered=%d, failed=%d",
             self.stats.sent,
-            self.stats.delivered,
+            delivered,
             self.stats.failed,
         )
-

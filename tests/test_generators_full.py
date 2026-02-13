@@ -901,6 +901,7 @@ class TestFraudPatternGeneratorFull:
         base_tx = Transaction(
             transaction_id="tx-001",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -931,6 +932,7 @@ class TestFraudPatternGeneratorFull:
         base_tx = Transaction(
             transaction_id="tx-002",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -953,6 +955,7 @@ class TestFraudPatternGeneratorFull:
         base_tx = Transaction(
             transaction_id="tx-003",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -976,6 +979,7 @@ class TestFraudPatternGeneratorFull:
         base_tx = Transaction(
             transaction_id="tx-004",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -999,6 +1003,7 @@ class TestFraudPatternGeneratorFull:
         base_tx = Transaction(
             transaction_id="tx-005",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -1039,6 +1044,7 @@ class TestPaymentBehaviorFull:
             inst = Installment(
                 installment_id=f"inst-{i}",
                 loan_id="loan-001",
+                customer_id="cust-001",
                 installment_number=i + 1,
                 due_date=due_date,
                 principal_amount=Decimal("400.00"),
@@ -1071,6 +1077,7 @@ class TestPaymentBehaviorFull:
             inst = Installment(
                 installment_id=f"inst-{i}",
                 loan_id="loan-001",
+                customer_id="cust-001",
                 installment_number=i + 1,
                 due_date=due_date,
                 principal_amount=Decimal("400.00"),
@@ -1104,6 +1111,7 @@ class TestPaymentBehaviorFull:
             inst = Installment(
                 installment_id=f"inst-{i}",
                 loan_id="loan-001",
+                customer_id="cust-001",
                 installment_number=i + 1,
                 due_date=due_date,
                 principal_amount=Decimal("400.00"),
@@ -1134,6 +1142,7 @@ class TestPaymentBehaviorFull:
             inst = Installment(
                 installment_id=f"inst-{i}",
                 loan_id="loan-001",
+                customer_id="cust-001",
                 installment_number=i + 1,
                 due_date=due_date,
                 principal_amount=Decimal("400.00"),

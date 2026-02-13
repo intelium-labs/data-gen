@@ -397,6 +397,7 @@ class TestFinancialDataStoreTransaction:
         tx = Transaction(
             transaction_id="tx-001",
             account_id=sample_account.account_id,
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -416,6 +417,7 @@ class TestFinancialDataStoreTransaction:
         tx = Transaction(
             transaction_id="tx-001",
             account_id="non-existent",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -440,6 +442,7 @@ class TestFinancialDataStoreTransaction:
             tx = Transaction(
                 transaction_id=f"tx-{i:03d}",
                 account_id=sample_account.account_id,
+                customer_id="cust-001",
                 transaction_type="PIX",
                 amount=Decimal(f"{100 + i}.00"),
                 direction="DEBIT",
@@ -485,6 +488,7 @@ class TestFinancialDataStoreCardTransaction:
         card_tx = CardTransaction(
             transaction_id="ctx-001",
             card_id=card.card_id,
+            customer_id="cust-001",
             merchant_name="Test Merchant",
             merchant_category="Supermercados",
             mcc_code="5411",
@@ -505,6 +509,7 @@ class TestFinancialDataStoreCardTransaction:
         card_tx = CardTransaction(
             transaction_id="ctx-001",
             card_id="non-existent",
+            customer_id="cust-001",
             merchant_name="Test",
             merchant_category="Test",
             mcc_code="5411",
@@ -542,6 +547,7 @@ class TestFinancialDataStoreCardTransaction:
             card_tx = CardTransaction(
                 transaction_id=f"ctx-{i:03d}",
                 card_id=card.card_id,
+                customer_id="cust-001",
                 merchant_name=f"Merchant {i}",
                 merchant_category="Test",
                 mcc_code="5411",
@@ -590,6 +596,7 @@ class TestFinancialDataStoreInstallment:
         installment = Installment(
             installment_id="inst-001",
             loan_id=loan.loan_id,
+            customer_id="cust-001",
             installment_number=1,
             due_date=date.today(),
             principal_amount=Decimal("800.00"),
@@ -609,6 +616,7 @@ class TestFinancialDataStoreInstallment:
         installment = Installment(
             installment_id="inst-001",
             loan_id="non-existent",
+            customer_id="cust-001",
             installment_number=1,
             due_date=date.today(),
             principal_amount=Decimal("800.00"),
@@ -647,6 +655,7 @@ class TestFinancialDataStoreInstallment:
             installment = Installment(
                 installment_id=f"inst-{i:03d}",
                 loan_id=loan.loan_id,
+                customer_id="cust-001",
                 installment_number=i + 1,
                 due_date=date.today(),
                 principal_amount=Decimal("900.00"),
@@ -776,6 +785,7 @@ class TestFinancialDataStoreUtilities:
         tx = Transaction(
             transaction_id="tx-001",
             account_id=account.account_id,
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",
@@ -790,6 +800,7 @@ class TestFinancialDataStoreUtilities:
         card_tx = CardTransaction(
             transaction_id="ctx-001",
             card_id=card.card_id,
+            customer_id="cust-001",
             merchant_name="Test",
             merchant_category="Test",
             mcc_code="5411",
@@ -805,6 +816,7 @@ class TestFinancialDataStoreUtilities:
         installment = Installment(
             installment_id="inst-001",
             loan_id=loan.loan_id,
+            customer_id="cust-001",
             installment_number=1,
             due_date=date.today(),
             principal_amount=Decimal("1000.00"),
@@ -893,6 +905,7 @@ class TestFinancialDataStoreTrade:
         trade = Trade(
             trade_id="trade-001",
             account_id=account.account_id,
+            customer_id="cust-001",
             stock_id=stock.stock_id,
             ticker=stock.ticker,
             trade_type="BUY",
@@ -930,6 +943,7 @@ class TestFinancialDataStoreTrade:
         trade = Trade(
             trade_id="trade-001",
             account_id="non-existent",
+            customer_id="cust-001",
             stock_id=stock.stock_id,
             ticker=stock.ticker,
             trade_type="BUY",
@@ -969,6 +983,7 @@ class TestFinancialDataStoreTrade:
         trade = Trade(
             trade_id="trade-001",
             account_id=account.account_id,
+            customer_id="cust-001",
             stock_id="non-existent",
             ticker="VALE3",
             trade_type="BUY",
@@ -1023,6 +1038,7 @@ class TestFinancialDataStoreTrade:
         trade = Trade(
             trade_id="trade-001",
             account_id=account.account_id,
+            customer_id="cust-001",
             stock_id=stock.stock_id,
             ticker=stock.ticker,
             trade_type="BUY",
@@ -1077,6 +1093,7 @@ class TestFinancialDataStoreTrade:
             trade = Trade(
                 trade_id=f"trade-{i:03d}",
                 account_id=account.account_id,
+                customer_id="cust-001",
                 stock_id=stock.stock_id,
                 ticker=stock.ticker,
                 trade_type="BUY" if i % 2 == 0 else "SELL",

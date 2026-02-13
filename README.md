@@ -137,6 +137,9 @@ python scripts/load_data.py --customers 500 --create-topics --truncate
 # Carregar 10K clientes (modo rápido auto-habilitado: COPY + BULK + streaming)
 python scripts/load_data.py --customers 10000 --create-topics --truncate
 
+# Streaming em tempo real: 1 hora a 1000 eventos/seg
+python scripts/load_data.py --stream --duration 3600 --create-topics --kafka-cluster oss
+
 # Carga paralela para 100K+ clientes
 python scripts/load_data_parallel.py --customers 100000 --create-topics --truncate
 ```

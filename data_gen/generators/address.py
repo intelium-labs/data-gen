@@ -1,12 +1,17 @@
 """Address generation factory with worldwide locale support."""
 
+from __future__ import annotations
+
 import random
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from faker import Faker
 
 from data_gen.models.base import Address
+
+if TYPE_CHECKING:
+    from data_gen.generators.pool import FakerPool
 
 
 @dataclass(frozen=True)
@@ -67,22 +72,29 @@ class AddressFactory:
     Uses Faker with locale-specific providers. Each configured country
     gets a dedicated Faker instance to ensure realistic local addresses.
 
+    When a ``FakerPool`` is provided, Brazilian addresses use pre-generated
+    pools for 3-5x faster generation.
+
     Parameters
     ----------
     distribution : CountryDistribution | None
         Country weight distribution. Defaults to ``brazil_dominant()``.
     seed : int | None
         Random seed for reproducibility.
+    pool : FakerPool | None
+        Pre-generated value pool for fast Brazilian address generation.
     """
 
     def __init__(
         self,
         distribution: CountryDistribution | None = None,
         seed: int | None = None,
+        pool: FakerPool | None = None,
     ) -> None:
         self._distribution = distribution or CountryDistribution.brazil_dominant()
         self._countries = list(self._distribution.weights.keys())
         self._weights = list(self._distribution.weights.values())
+        self._pool = pool
         self._fakers: dict[str, Faker] = {}
 
         for country_code in self._countries:
@@ -109,6 +121,10 @@ class AddressFactory:
         if country is None:
             country = random.choices(self._countries, weights=self._weights, k=1)[0]
 
+        # Use pool for Brazilian addresses (fast path)
+        if country == "BR" and self._pool is not None:
+            return _generate_br_pooled(self._pool)
+
         fake = self._fakers.get(country)
         if fake is None:
             # Country not in distribution — create a one-off Faker
@@ -126,6 +142,20 @@ class AddressFactory:
 # ---------------------------------------------------------------------------
 # Per-country address generators
 # ---------------------------------------------------------------------------
+
+def _generate_br_pooled(pool: FakerPool) -> Address:
+    """Generate Brazilian address using pre-generated pools (fast path)."""
+    return Address(
+        street=pool.street(),
+        number=str(random.randint(1, 9999)),
+        neighborhood=pool.bairro(),
+        city=pool.city(),
+        state=pool.estado(),
+        postal_code=pool.postcode(),
+        complement=random.choice(["", "", "", f"Apto {random.randint(1, 500)}"]),
+        country="BR",
+    )
+
 
 def _generate_br(fake: Faker, country: str) -> Address:
     """Generate Brazilian address using pt_BR-specific methods."""

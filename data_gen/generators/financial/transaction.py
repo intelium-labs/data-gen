@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Iterator
 
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial import Account, Transaction
 from data_gen.models.financial.enums import Direction, PixKeyType, TransactionStatus, TransactionType
 from data_gen.store.financial import FinancialDataStore
@@ -19,16 +20,18 @@ class TransactionGenerator(BaseGenerator):
 
     PIX_KEY_TYPES = list(PixKeyType)
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
-    def generate(self, account_id: str) -> Transaction:
+    def generate(self, account_id: str, customer_id: str = "") -> Transaction:
         """Generate a single transaction for an account.
 
         Parameters
         ----------
         account_id : str
             Account ID to associate with the transaction.
+        customer_id : str
+            Customer ID that owns the account.
 
         Returns
         -------
@@ -59,17 +62,18 @@ class TransactionGenerator(BaseGenerator):
         if tx_type == TransactionType.PIX:
             pix_key_type = random.choice(self.PIX_KEY_TYPES)
             counterparty_key = self._generate_pix_key(pix_key_type)
-            counterparty_name = self.fake.name()
+            counterparty_name = self.pool.name()
             pix_e2e_id = self._generate_e2e_id()
         elif tx_type in (TransactionType.TED, TransactionType.DOC):
             counterparty_key = f"{random.randint(1, 999):03d}/{random.randint(1, 9999):04d}/{random.randint(1, 999999):06d}-{random.randint(0, 9)}"
-            counterparty_name = self.fake.name()
+            counterparty_name = self.pool.name()
 
         description = self._generate_description(tx_type, counterparty_name)
 
         return Transaction(
-            transaction_id=self.fake.uuid4(),
+            transaction_id=self.pool.uuid(),
             account_id=account_id,
+            customer_id=customer_id,
             transaction_type=tx_type,
             amount=Decimal(str(amount)),
             direction=direction,
@@ -86,7 +90,7 @@ class TransactionGenerator(BaseGenerator):
             pix_key_type=pix_key_type,
         )
 
-    def generate_pix(self, account_id: str) -> Transaction:
+    def generate_pix(self, account_id: str, customer_id: str = "") -> Transaction:
         """Generate a PIX transaction.
 
         Parameters
@@ -101,7 +105,7 @@ class TransactionGenerator(BaseGenerator):
         """
         pix_key_type = random.choice(self.PIX_KEY_TYPES)
         counterparty_key = self._generate_pix_key(pix_key_type)
-        counterparty_name = self.fake.name()
+        counterparty_name = self.pool.name()
         pix_e2e_id = self._generate_e2e_id()
 
         amount = random.paretovariate(1.5) * 50
@@ -109,8 +113,9 @@ class TransactionGenerator(BaseGenerator):
         amount = round(amount, 2)
 
         return Transaction(
-            transaction_id=self.fake.uuid4(),
+            transaction_id=self.pool.uuid(),
             account_id=account_id,
+            customer_id=customer_id,
             transaction_type=TransactionType.PIX,
             amount=Decimal(str(amount)),
             direction=random.choice(list(Direction)),
@@ -185,7 +190,7 @@ class TransactionGenerator(BaseGenerator):
         if tx_type == TransactionType.PIX:
             pix_key_type = random.choice(self.PIX_KEY_TYPES)
             counterparty_key = self._generate_pix_key(pix_key_type)
-            counterparty_name = self.fake.name()
+            counterparty_name = self.pool.name()
             pix_e2e_id = self._generate_e2e_id()
         elif tx_type in (TransactionType.TED, TransactionType.DOC):
             # Use another account from store if available
@@ -194,13 +199,14 @@ class TransactionGenerator(BaseGenerator):
                 counterparty_key = f"{other_account.bank_code}/{other_account.branch}/{other_account.account_number}"
             else:
                 counterparty_key = f"{random.randint(1, 999):03d}/{random.randint(1, 9999):04d}/{random.randint(1, 999999):06d}-{random.randint(0, 9)}"
-            counterparty_name = self.fake.name()
+            counterparty_name = self.pool.name()
 
         description = self._generate_description(tx_type, counterparty_name)
 
         return Transaction(
-            transaction_id=self.fake.uuid4(),
+            transaction_id=self.pool.uuid(),
             account_id=account.account_id,
+            customer_id=account.customer_id,
             transaction_type=tx_type,
             amount=Decimal(str(amount)),
             direction=direction,
@@ -225,15 +231,16 @@ class TransactionGenerator(BaseGenerator):
     def _generate_pix_key(self, key_type: PixKeyType) -> str:
         """Generate a Pix key based on type."""
         if key_type == PixKeyType.CPF:
-            return self.fake.cpf().replace(".", "").replace("-", "")
+            return self.pool.cpf_raw()
         elif key_type == PixKeyType.CNPJ:
-            return self.fake.cnpj().replace(".", "").replace("/", "").replace("-", "")
+            return self.pool.cnpj_raw()
         elif key_type == PixKeyType.EMAIL:
-            return self.fake.email()
+            return self.pool.email()
         elif key_type == PixKeyType.PHONE:
-            return "+55" + self.fake.msisdn()[2:]
+            msisdn = self.pool.msisdn()
+            return "+55" + msisdn[2:]
         else:  # EVP
-            return self.fake.uuid4()
+            return self.pool.uuid()
 
     def _generate_e2e_id(self) -> str:
         """Generate Pix E2E ID."""
@@ -257,5 +264,5 @@ class TransactionGenerator(BaseGenerator):
         elif tx_type == TransactionType.DEPOSIT:
             return "Depósito"
         elif tx_type == TransactionType.BOLETO:
-            return f"Pagamento boleto - {self.fake.company()}"
+            return f"Pagamento boleto - {self.pool.company()}"
         return ""

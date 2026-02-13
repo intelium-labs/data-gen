@@ -30,6 +30,7 @@ class CardTransaction:
 
     transaction_id: str
     card_id: str
+    customer_id: str
     merchant_name: str
     merchant_category: str  # MCC description
     mcc_code: str  # Merchant Category Code (4 digits)

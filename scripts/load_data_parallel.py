@@ -34,6 +34,7 @@ from data_gen.generators.financial import (
 )
 from data_gen.generators.financial.loan import PropertyGenerator
 from data_gen.generators.financial.patterns import PaymentBehavior
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial.enums import AccountType, LoanType
 from data_gen.sinks.kafka import BULK, KafkaSink, ProducerConfig
 from data_gen.sinks.postgres import PostgresSink
@@ -44,6 +45,22 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Cluster connection presets for --kafka-cluster flag
+CLUSTER_PRESETS: dict[str, dict[str, str | int]] = {
+    "cp": {
+        "kafka_bootstrap": "localhost:9092",
+        "schema_registry": "http://localhost:8081",
+        "postgres_url": "postgresql://postgres:postgres@localhost:5432/datagen",
+        "replication_factor": 1,
+    },
+    "oss": {
+        "kafka_bootstrap": "localhost:19092,localhost:19093,localhost:19094",
+        "schema_registry": "http://localhost:18081",
+        "postgres_url": "postgresql://postgres:postgres@localhost:15432/datagen",
+        "replication_factor": 3,
+    },
+}
 
 
 def generate_master_data(num_customers: int, seed: int) -> tuple[MasterDataStore, list]:
@@ -64,13 +81,16 @@ def generate_master_data(num_customers: int, seed: int) -> tuple[MasterDataStore
     store = MasterDataStore()
     payment_behavior = PaymentBehavior(seed=seed)
 
-    # Initialize generators
-    customer_gen = CustomerGenerator(seed=seed)
-    account_gen = AccountGenerator(seed=seed)
-    credit_card_gen = CreditCardGenerator(seed=seed)
-    loan_gen = LoanGenerator(seed=seed)
-    property_gen = PropertyGenerator(seed=seed)
-    stock_gen = StockGenerator(seed=seed)
+    # Shared FakerPool — pre-generates all Faker values at startup
+    pool = FakerPool(seed=seed)
+
+    # Initialize generators (all share the same pool)
+    customer_gen = CustomerGenerator(seed=seed, pool=pool)
+    account_gen = AccountGenerator(seed=seed, pool=pool)
+    credit_card_gen = CreditCardGenerator(seed=seed, pool=pool)
+    loan_gen = LoanGenerator(seed=seed, pool=pool)
+    property_gen = PropertyGenerator(seed=seed, pool=pool)
+    stock_gen = StockGenerator(seed=seed, pool=pool)
 
     all_installments = []
 
@@ -211,12 +231,15 @@ def _worker_generate_events(
     mini_store.accounts = store_accounts_dict
     mini_store.credit_cards = store_credit_cards_dict
 
-    # Initialize generators with worker-specific seed
-    transaction_gen = TransactionGenerator(seed=worker_seed)
-    card_gen = CreditCardGenerator(seed=worker_seed)
-    trade_gen = TradeGenerator(seed=worker_seed)
+    # Per-worker FakerPool (each worker has independent pool)
+    worker_pool = FakerPool(seed=worker_seed)
 
-    # Create per-worker Kafka producer
+    # Initialize generators with worker-specific seed and pool
+    transaction_gen = TransactionGenerator(seed=worker_seed, pool=worker_pool)
+    card_gen = CreditCardGenerator(seed=worker_seed, pool=worker_pool)
+    trade_gen = TradeGenerator(seed=worker_seed, pool=worker_pool)
+
+    # Create per-worker Kafka producer (full BULK preset)
     config = ProducerConfig(
         bootstrap_servers=bootstrap_servers,
         schema_registry_url=schema_registry_url,
@@ -224,6 +247,8 @@ def _worker_generate_events(
         batch_size=BULK.batch_size,
         linger_ms=BULK.linger_ms,
         compression=BULK.compression,
+        queue_buffering_max_messages=BULK.queue_buffering_max_messages,
+        queue_buffering_max_kbytes=BULK.queue_buffering_max_kbytes,
     )
     sink = KafkaSink(config, use_cloudevents=use_cloudevents, poll_interval=10000)
 
@@ -237,7 +262,7 @@ def _worker_generate_events(
             for tx in transaction_gen.generate_for_account(
                 account, mini_store, start_date, end_date, avg_transactions_per_day=0.3
             ):
-                sink.send("banking.transactions", tx)
+                sink.send_fast("banking.transactions", tx)
                 counts["transactions"] += 1
 
         # Card transactions
@@ -245,7 +270,7 @@ def _worker_generate_events(
             for card_tx in card_gen.generate_transactions(
                 card, start_date, end_date, avg_transactions_per_day=0.5
             ):
-                sink.send("banking.card-transactions", card_tx)
+                sink.send_fast("banking.card-transactions", card_tx)
                 counts["card_transactions"] += 1
 
         # Trades
@@ -254,9 +279,10 @@ def _worker_generate_events(
                 account_id=account.account_id,
                 stocks=stocks_list,
                 num_trades=20,
+                customer_id=account.customer_id,
             )
             for trade in trades:
-                sink.send("banking.trades", trade)
+                sink.send_fast("banking.trades", trade)
                 counts["trades"] += 1
 
         sink.flush()
@@ -295,6 +321,7 @@ def _chunk_list(lst: list, n: int) -> list[list]:
 def create_kafka_topics(
     bootstrap_servers: str,
     retention_hours: int = 8,
+    replication_factor: int = 1,
 ) -> None:
     """Create Kafka topics if they don't exist.
 
@@ -304,6 +331,8 @@ def create_kafka_topics(
         Kafka bootstrap servers.
     retention_hours : int
         Per-topic retention in hours (default: 8).
+    replication_factor : int
+        Topic replication factor (default: 1, use 3 for multi-broker clusters).
     """
     from confluent_kafka.admin import AdminClient, NewTopic
 
@@ -313,10 +342,10 @@ def create_kafka_topics(
     topic_config = {"retention.ms": retention_ms}
 
     topics = [
-        NewTopic("banking.transactions", num_partitions=6, replication_factor=1, config=topic_config),
-        NewTopic("banking.card-transactions", num_partitions=6, replication_factor=1, config=topic_config),
-        NewTopic("banking.trades", num_partitions=3, replication_factor=1, config=topic_config),
-        NewTopic("banking.installments", num_partitions=3, replication_factor=1, config=topic_config),
+        NewTopic("banking.transactions", num_partitions=6, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.card-transactions", num_partitions=6, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.trades", num_partitions=3, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.installments", num_partitions=3, replication_factor=replication_factor, config=topic_config),
     ]
 
     logger.info("Topic retention: %d hours", retention_hours)
@@ -420,7 +449,34 @@ def main() -> None:
         default=8,
         help="Kafka topic retention in hours (default: 8). Suited for test-and-clean workflows.",
     )
+    parser.add_argument(
+        "--kafka-cluster",
+        type=str,
+        choices=["cp", "oss"],
+        default=None,
+        help="Cluster preset: 'cp' (Confluent Platform, 1 broker) or 'oss' (Apache Kafka, 3 brokers). "
+        "Overrides --kafka-bootstrap, --schema-registry, --postgres-url, and replication factor.",
+    )
+    parser.add_argument(
+        "--replication-factor",
+        type=int,
+        default=None,
+        help="Kafka topic replication factor (auto-set by --kafka-cluster, or specify manually)",
+    )
     args = parser.parse_args()
+
+    # Apply cluster preset if specified
+    if args.kafka_cluster:
+        preset = CLUSTER_PRESETS[args.kafka_cluster]
+        args.kafka_bootstrap = preset["kafka_bootstrap"]
+        args.schema_registry = preset["schema_registry"]
+        args.postgres_url = preset["postgres_url"]
+        if args.replication_factor is None:
+            args.replication_factor = preset["replication_factor"]
+
+    # Default replication factor
+    if args.replication_factor is None:
+        args.replication_factor = 1
 
     num_workers = args.workers or os.cpu_count() or 4
 
@@ -450,7 +506,7 @@ def main() -> None:
 
     # Phase 2: Create topics
     if args.create_topics and not args.skip_kafka:
-        create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours)
+        create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours, replication_factor=args.replication_factor)
 
     # Phase 3: Load master data to PostgreSQL (COPY)
     if not args.skip_postgres:
@@ -485,13 +541,15 @@ def main() -> None:
             batch_size=BULK.batch_size,
             linger_ms=BULK.linger_ms,
             compression=BULK.compression,
+            queue_buffering_max_messages=BULK.queue_buffering_max_messages,
+            queue_buffering_max_kbytes=BULK.queue_buffering_max_kbytes,
         )
         inst_sink = KafkaSink(
             config, use_cloudevents=not args.no_cloudevents, poll_interval=10000
         )
         t0 = time.perf_counter()
         for inst in all_installments:
-            inst_sink.send("banking.installments", inst)
+            inst_sink.send_fast("banking.installments", inst)
         inst_sink.flush()
         inst_sink.close()
         inst_elapsed = time.perf_counter() - t0

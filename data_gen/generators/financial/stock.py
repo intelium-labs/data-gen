@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Iterator
 
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial import Stock, Trade
 from data_gen.models.financial.enums import OrderType, StockSector, StockSegment, TradeStatus, TradeType
 
@@ -77,8 +78,8 @@ class StockGenerator(BaseGenerator):
     SEGMENTS = list(StockSegment)
     SEGMENT_WEIGHTS = [0.50, 0.20, 0.15, 0.15]
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
     def generate(self, stock_data: dict | None = None) -> Stock:
         """Generate a single B3 stock.
@@ -105,7 +106,7 @@ class StockGenerator(BaseGenerator):
         isin = f"BR{stock_data['ticker'][:4].upper()}ACN{random.randint(100, 999)}"
 
         return Stock(
-            stock_id=self.fake.uuid4(),
+            stock_id=self.pool.uuid(),
             ticker=stock_data["ticker"],
             company_name=stock_data["company"],
             sector=StockSector(stock_data["sector"]),
@@ -165,8 +166,8 @@ class TradeGenerator(BaseGenerator):
     B3_EMOLUMENTS_PCT = Decimal("0.000275")  # 0.0275%
     B3_SETTLEMENT_PCT = Decimal("0.0000275")  # 0.00275%
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
     def generate(
         self,
@@ -174,6 +175,7 @@ class TradeGenerator(BaseGenerator):
         stock: Stock,
         trade_type: TradeType | None = None,
         executed_at: datetime | None = None,
+        customer_id: str = "",
     ) -> Trade:
         """Generate a single trade.
 
@@ -187,6 +189,8 @@ class TradeGenerator(BaseGenerator):
             BUY or SELL (random if not specified).
         executed_at : datetime | None
             Execution timestamp (now if not specified).
+        customer_id : str
+            Customer ID that owns the account.
 
         Returns
         -------
@@ -233,8 +237,9 @@ class TradeGenerator(BaseGenerator):
         settlement_date = self._calculate_settlement_date(executed_at)
 
         return Trade(
-            trade_id=self.fake.uuid4(),
+            trade_id=self.pool.uuid(),
             account_id=account_id,
+            customer_id=customer_id,
             stock_id=stock.stock_id,
             ticker=stock.ticker,
             trade_type=trade_type,
@@ -278,6 +283,7 @@ class TradeGenerator(BaseGenerator):
         num_trades: int = 10,
         start_date: datetime | None = None,
         end_date: datetime | None = None,
+        customer_id: str = "",
     ) -> list[Trade]:
         """Generate multiple trades for an investment account.
 
@@ -293,6 +299,8 @@ class TradeGenerator(BaseGenerator):
             Start of trading period.
         end_date : datetime | None
             End of trading period.
+        customer_id : str
+            Customer ID that owns the account.
 
         Returns
         -------
@@ -323,7 +331,7 @@ class TradeGenerator(BaseGenerator):
                 second=random.randint(0, 59),
             )
 
-            trade = self.generate(account_id, stock, executed_at=executed_at)
+            trade = self.generate(account_id, stock, executed_at=executed_at, customer_id=customer_id)
             trades.append(trade)
 
         # Sort by execution time

@@ -37,6 +37,7 @@ class Installment:
 
     installment_id: str
     loan_id: str
+    customer_id: str
     installment_number: int  # 1, 2, 3, ...
     due_date: date
     principal_amount: Decimal

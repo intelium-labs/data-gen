@@ -13,7 +13,10 @@ Performance modes:
 """
 
 import argparse
+import itertools
 import logging
+import random
+import signal
 import sys
 import time
 from datetime import datetime
@@ -25,6 +28,7 @@ sys.path.insert(0, str(project_root))
 
 from data_gen.generators.financial import (
     AccountGenerator,
+    CardTransactionGenerator,
     CreditCardGenerator,
     CustomerGenerator,
     LoanGenerator,
@@ -34,8 +38,9 @@ from data_gen.generators.financial import (
 )
 from data_gen.generators.financial.loan import PropertyGenerator
 from data_gen.generators.financial.patterns import PaymentBehavior
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial.enums import AccountType, LoanType
-from data_gen.sinks.kafka import BULK, KafkaSink, ProducerConfig
+from data_gen.sinks.kafka import BULK, STREAMING, KafkaSink, ProducerConfig
 from data_gen.sinks.postgres import PostgresSink
 from data_gen.store.financial import FinancialDataStore, MasterDataStore
 
@@ -44,6 +49,22 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Cluster connection presets for --kafka-cluster flag
+CLUSTER_PRESETS: dict[str, dict[str, str | int]] = {
+    "cp": {
+        "kafka_bootstrap": "localhost:9092",
+        "schema_registry": "http://localhost:8081",
+        "postgres_url": "postgresql://postgres:postgres@localhost:5432/datagen",
+        "replication_factor": 1,
+    },
+    "oss": {
+        "kafka_bootstrap": "localhost:19092,localhost:19093,localhost:19094",
+        "schema_registry": "http://localhost:18081",
+        "postgres_url": "postgresql://postgres:postgres@localhost:15432/datagen",
+        "replication_factor": 3,
+    },
+}
 
 
 def generate_master_data(
@@ -69,13 +90,17 @@ def generate_master_data(
     """
     logger.info("Generating master data for %d customers...", num_customers)
 
-    # Initialize generators
-    customer_gen = CustomerGenerator(seed=seed)
-    account_gen = AccountGenerator(seed=seed)
-    credit_card_gen = CreditCardGenerator(seed=seed)
-    loan_gen = LoanGenerator(seed=seed)
-    property_gen = PropertyGenerator(seed=seed)
-    stock_gen = StockGenerator(seed=seed)
+    # Shared FakerPool — pre-generates all Faker values at startup
+    # for 2-4x faster generation via random.choice() lookups.
+    pool = FakerPool(seed=seed)
+
+    # Initialize generators (all share the same pool)
+    customer_gen = CustomerGenerator(seed=seed, pool=pool)
+    account_gen = AccountGenerator(seed=seed, pool=pool)
+    credit_card_gen = CreditCardGenerator(seed=seed, pool=pool)
+    loan_gen = LoanGenerator(seed=seed, pool=pool)
+    property_gen = PropertyGenerator(seed=seed, pool=pool)
+    stock_gen = StockGenerator(seed=seed, pool=pool)
     payment_behavior = PaymentBehavior(seed=seed)
 
     all_installments = []
@@ -292,6 +317,230 @@ def load_to_postgres(
         sink.close()
 
 
+class TokenBucketRateLimiter:
+    """Token bucket rate limiter for steady event emission.
+
+    Parameters
+    ----------
+    rate : float
+        Target events per second.
+    burst : int | None
+        Maximum burst size. Defaults to max(1, rate // 10).
+    """
+
+    def __init__(self, rate: float, burst: int | None = None) -> None:
+        self.rate = rate
+        self.burst = burst or max(1, int(rate // 10))
+        self.tokens = float(self.burst)
+        self.last_refill = time.monotonic()
+
+    def acquire(self) -> None:
+        """Block until a token is available, then consume one."""
+        while True:
+            now = time.monotonic()
+            self.tokens = min(self.burst, self.tokens + (now - self.last_refill) * self.rate)
+            self.last_refill = now
+            if self.tokens >= 1.0:
+                self.tokens -= 1.0
+                return
+            time.sleep((1.0 - self.tokens) / self.rate)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds as HH:MM:SS."""
+    h, remainder = divmod(int(seconds), 3600)
+    m, s = divmod(remainder, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def load_to_kafka_realtime(
+    store: MasterDataStore,
+    bootstrap_servers: str,
+    schema_registry_url: str | None,
+    seed: int,
+    all_installments: list,
+    duration_seconds: int,
+    rate_per_second: int,
+    use_cloudevents: bool = True,
+) -> dict[str, int]:
+    """Generate and stream events to Kafka at a controlled rate.
+
+    Parameters
+    ----------
+    store : MasterDataStore
+        Master data store with customers, accounts, cards, stocks.
+    bootstrap_servers : str
+        Kafka bootstrap servers.
+    schema_registry_url : str | None
+        Schema Registry URL (None for JSON serialization).
+    seed : int
+        Random seed for generators.
+    all_installments : list
+        Pre-generated installments from warm-up.
+    duration_seconds : int
+        How long to stream in seconds.
+    rate_per_second : int
+        Target events per second.
+    use_cloudevents : bool
+        Include CloudEvents headers (default: True).
+
+    Returns
+    -------
+    dict[str, int]
+        Counts of events sent per type.
+    """
+    logger.info(
+        "Real-time streaming to Kafka: %d events/sec for %s...",
+        rate_per_second, _format_duration(duration_seconds),
+    )
+
+    # Shared FakerPool for event generators
+    pool = FakerPool(seed=seed)
+
+    # Initialize generators
+    transaction_gen = TransactionGenerator(seed=seed, pool=pool)
+    card_tx_gen = CardTransactionGenerator(seed=seed, pool=pool)
+    trade_gen = TradeGenerator(seed=seed, pool=pool)
+
+    # Create STREAMING config
+    config = ProducerConfig(
+        bootstrap_servers=bootstrap_servers,
+        schema_registry_url=schema_registry_url,
+        acks=STREAMING.acks,
+        batch_size=STREAMING.batch_size,
+        linger_ms=STREAMING.linger_ms,
+        compression=STREAMING.compression,
+        queue_buffering_max_messages=STREAMING.queue_buffering_max_messages,
+        queue_buffering_max_kbytes=STREAMING.queue_buffering_max_kbytes,
+    )
+
+    sink = KafkaSink(config, use_cloudevents=use_cloudevents)
+
+    # Pre-compute master data lists for O(1) random access
+    accounts_list = list(store.accounts.values())
+    cards_list = list(store.credit_cards.values())
+    investment_accounts = [a for a in accounts_list if a.account_type == AccountType.INVESTIMENTOS]
+    stocks_list = list(store.stocks.values())
+
+    # Event type distribution and dispatch
+    event_types = ["transactions", "card_transactions", "trades", "installments"]
+    weights = [0.50, 0.30, 0.10, 0.10]
+
+    # Adjust weights if some entity types are missing
+    if not cards_list:
+        logger.warning("No credit cards generated — card_transactions weight redistributed to transactions")
+        weights = [0.80, 0.00, 0.10, 0.10]
+    if not investment_accounts or not stocks_list:
+        logger.warning("No investment accounts/stocks — trades weight redistributed to transactions")
+        weights[0] += weights[2]
+        weights[2] = 0.0
+    if not all_installments:
+        logger.warning("No installments generated — weight redistributed to transactions")
+        weights[0] += weights[3]
+        weights[3] = 0.0
+
+    installments_iter = itertools.cycle(all_installments) if all_installments else None
+
+    # Rate limiter
+    limiter = TokenBucketRateLimiter(rate_per_second)
+
+    # Graceful shutdown
+    shutdown_requested = False
+    original_sigint = signal.getsignal(signal.SIGINT)
+
+    def _signal_handler(signum: int, frame: object) -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+        logger.info("[STREAM] Shutdown requested, flushing remaining events...")
+
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    # Main streaming loop
+    counts: dict[str, int] = {et: 0 for et in event_types}
+    total_sent = 0
+    start_time = time.monotonic()
+    deadline = start_time + duration_seconds
+    last_report = start_time
+
+    try:
+        while time.monotonic() < deadline and not shutdown_requested:
+            limiter.acquire()
+
+            # Pick event type
+            event_type = random.choices(event_types, weights=weights, k=1)[0]
+
+            # Generate and send
+            if event_type == "transactions":
+                account = random.choice(accounts_list)
+                record = transaction_gen.generate(account.account_id, account.customer_id)
+                sink.send_fast("banking.transactions", record)
+            elif event_type == "card_transactions":
+                card = random.choice(cards_list)
+                record = card_tx_gen.generate(card.card_id, card.customer_id)
+                sink.send_fast("banking.card-transactions", record)
+            elif event_type == "trades":
+                account = random.choice(investment_accounts)
+                stock = random.choice(stocks_list)
+                record = trade_gen.generate(
+                    account.account_id, stock, customer_id=account.customer_id,
+                )
+                sink.send_fast("banking.trades", record)
+            else:  # installments
+                record = next(installments_iter)
+                sink.send_fast("banking.installments", record)
+
+            counts[event_type] += 1
+            total_sent += 1
+
+            # Progress report every 10 seconds
+            now = time.monotonic()
+            if now - last_report >= 10.0:
+                elapsed = now - start_time
+                remaining = deadline - now
+                actual_rate = total_sent / elapsed
+                logger.info(
+                    "[STREAM] %s events | %.0f/sec (target: %d) | "
+                    "elapsed: %s | remaining: %s | "
+                    "txn=%d card=%d trade=%d inst=%d",
+                    f"{total_sent:,}", actual_rate, rate_per_second,
+                    _format_duration(elapsed), _format_duration(remaining),
+                    counts["transactions"], counts["card_transactions"],
+                    counts["trades"], counts["installments"],
+                )
+                last_report = now
+    finally:
+        # Restore original signal handler
+        signal.signal(signal.SIGINT, original_sigint)
+
+        # Flush and close
+        elapsed = time.monotonic() - start_time
+        logger.info(
+            "[STREAM] Flushing producer buffer (timeout: %.0fs)...",
+            min(60.0, 30.0 + total_sent / 10000),
+        )
+        sink.flush()
+        sink.close()
+
+        avg_rate = total_sent / max(elapsed, 0.001)
+        logger.info(
+            "[STREAM] Complete! %s events in %s | avg rate: %.0f/sec",
+            f"{total_sent:,}", _format_duration(elapsed), avg_rate,
+        )
+        logger.info(
+            "[STREAM] Breakdown: txn=%s card=%s trade=%s inst=%s",
+            f"{counts['transactions']:,}",
+            f"{counts['card_transactions']:,}",
+            f"{counts['trades']:,}",
+            f"{counts['installments']:,}",
+        )
+
+    # Update store event counters for summary/validation
+    for et, count in counts.items():
+        store.count_event(et, count)
+
+    return counts
+
+
 def load_to_kafka_streaming(
     store: MasterDataStore,
     bootstrap_servers: str,
@@ -317,14 +566,17 @@ def load_to_kafka_streaming(
     use_cloudevents : bool
         If True, include CloudEvents headers (default: True).
     """
-    logger.info("Streaming event data to Kafka (BULK mode)...")
+    logger.info("Streaming event data to Kafka (BULK mode, 4 producers)...")
 
-    # Initialize generators
-    transaction_gen = TransactionGenerator(seed=seed)
-    credit_card_gen = CreditCardGenerator(seed=seed)
-    trade_gen = TradeGenerator(seed=seed)
+    # Shared FakerPool for event generators
+    pool = FakerPool(seed=seed)
 
-    # Create Kafka sink with BULK preset
+    # Initialize generators (all share the same pool)
+    transaction_gen = TransactionGenerator(seed=seed, pool=pool)
+    credit_card_gen = CreditCardGenerator(seed=seed, pool=pool)
+    trade_gen = TradeGenerator(seed=seed, pool=pool)
+
+    # Create BULK config (shared by all 4 producers)
     config = ProducerConfig(
         bootstrap_servers=bootstrap_servers,
         schema_registry_url=schema_registry_url,
@@ -332,85 +584,155 @@ def load_to_kafka_streaming(
         batch_size=BULK.batch_size,
         linger_ms=BULK.linger_ms,
         compression=BULK.compression,
+        queue_buffering_max_messages=BULK.queue_buffering_max_messages,
+        queue_buffering_max_kbytes=BULK.queue_buffering_max_kbytes,
     )
-    sink = KafkaSink(config, use_cloudevents=use_cloudevents, poll_interval=10000)
+
+    import queue
+    import threading
+
+    # 4 topic-specific queues + senders for I/O parallelism.
+    # Each KafkaSink has an independent librdkafka Producer that releases
+    # the GIL during C-level produce(), enabling genuine parallelism.
+    TOPICS = [
+        "banking.transactions",
+        "banking.card-transactions",
+        "banking.trades",
+        "banking.installments",
+    ]
+    BATCH_SIZE = 1024
+    _SENTINEL = object()
+
+    topic_queues: dict[str, queue.Queue] = {t: queue.Queue(maxsize=10_000) for t in TOPICS}
+    sender_sinks: list[KafkaSink] = []
+    sender_results: dict[str, int] = {}
+
+    def sender_loop(topic: str, q: queue.Queue, sink: KafkaSink) -> None:
+        """Sender thread: drain batches from queue and produce to Kafka."""
+        sent = 0
+        while True:
+            item = q.get()
+            if item is _SENTINEL:
+                break
+            for _topic, record in item:
+                sink.send_fast(_topic, record)
+                sent += 1
+        sender_results[topic] = sent
+
+    # Create 4 sinks + start 4 sender threads
+    sender_threads: list[threading.Thread] = []
+    for topic in TOPICS:
+        s = KafkaSink(config, use_cloudevents=use_cloudevents, poll_interval=10000)
+        sender_sinks.append(s)
+        t = threading.Thread(target=sender_loop, args=(topic, topic_queues[topic], s), daemon=True)
+        t.start()
+        sender_threads.append(t)
 
     try:
-        # Generate and send transactions (streaming — not stored in memory)
-        t0 = time.perf_counter()
         accounts_list = list(store.accounts.values())
         start_date = datetime(2024, 1, 1)
         end_date = datetime(2024, 12, 31)
-
-        transaction_count = 0
-        for account in accounts_list:
-            for tx in transaction_gen.generate_for_account(
-                account, store, start_date, end_date, avg_transactions_per_day=0.3
-            ):
-                sink.send("banking.transactions", tx)
-                transaction_count += 1
-
-        elapsed = time.perf_counter() - t0
-        store.count_event("transactions", transaction_count)
-        logger.info("Sent %d transactions in %.1fs (%.0f/sec)",
-                     transaction_count, elapsed, transaction_count / max(elapsed, 0.001))
-
-        # Generate and send card transactions
-        t0 = time.perf_counter()
         cards_list = list(store.credit_cards.values())
-        card_start = datetime(2024, 1, 1)
-        card_end = datetime(2024, 12, 31)
-
-        card_tx_count = 0
-        for card in cards_list:
-            for card_tx in credit_card_gen.generate_transactions(
-                card, card_start, card_end, avg_transactions_per_day=0.5
-            ):
-                sink.send("banking.card-transactions", card_tx)
-                card_tx_count += 1
-
-        elapsed = time.perf_counter() - t0
-        store.count_event("card_transactions", card_tx_count)
-        logger.info("Sent %d card transactions in %.1fs (%.0f/sec)",
-                     card_tx_count, elapsed, card_tx_count / max(elapsed, 0.001))
-
-        # Generate and send trades
-        t0 = time.perf_counter()
         investment_accounts = [
             a for a in accounts_list if a.account_type == AccountType.INVESTIMENTOS
         ]
         stocks_list = list(store.stocks.values())
 
-        trade_count = 0
-        for account in investment_accounts:
-            trades = trade_gen.generate_trades_for_account(
-                account_id=account.account_id,
-                stocks=stocks_list,
-                num_trades=20,
-            )
-            for trade in trades:
-                sink.send("banking.trades", trade)
-                trade_count += 1
+        # Counters shared with generator thread
+        counts = {"transactions": 0, "card_transactions": 0, "trades": 0}
 
-        elapsed = time.perf_counter() - t0
-        store.count_event("trades", trade_count)
-        logger.info("Sent %d trades in %.1fs (%.0f/sec)",
-                     trade_count, elapsed, trade_count / max(elapsed, 0.001))
+        def generate_all_events() -> None:
+            """Generator thread: buffer events into batches and route to topic queues."""
+            batch: dict[str, list] = {t: [] for t in TOPICS}
 
-        # Send installments
+            # Transactions
+            for account in accounts_list:
+                for tx in transaction_gen.generate_for_account(
+                    account, store, start_date, end_date, avg_transactions_per_day=0.3
+                ):
+                    batch["banking.transactions"].append(("banking.transactions", tx))
+                    counts["transactions"] += 1
+                    if len(batch["banking.transactions"]) >= BATCH_SIZE:
+                        topic_queues["banking.transactions"].put(batch["banking.transactions"])
+                        batch["banking.transactions"] = []
+
+            # Card transactions
+            for card in cards_list:
+                for card_tx in credit_card_gen.generate_transactions(
+                    card, start_date, end_date, avg_transactions_per_day=0.5
+                ):
+                    batch["banking.card-transactions"].append(("banking.card-transactions", card_tx))
+                    counts["card_transactions"] += 1
+                    if len(batch["banking.card-transactions"]) >= BATCH_SIZE:
+                        topic_queues["banking.card-transactions"].put(batch["banking.card-transactions"])
+                        batch["banking.card-transactions"] = []
+
+            # Trades
+            for account in investment_accounts:
+                trades = trade_gen.generate_trades_for_account(
+                    account_id=account.account_id,
+                    stocks=stocks_list,
+                    num_trades=20,
+                    customer_id=account.customer_id,
+                )
+                for trade in trades:
+                    batch["banking.trades"].append(("banking.trades", trade))
+                    counts["trades"] += 1
+                    if len(batch["banking.trades"]) >= BATCH_SIZE:
+                        topic_queues["banking.trades"].put(batch["banking.trades"])
+                        batch["banking.trades"] = []
+
+            # Installments
+            for inst in all_installments:
+                batch["banking.installments"].append(("banking.installments", inst))
+                if len(batch["banking.installments"]) >= BATCH_SIZE:
+                    topic_queues["banking.installments"].put(batch["banking.installments"])
+                    batch["banking.installments"] = []
+
+            # Flush remaining batches + sentinel to each queue
+            for t in TOPICS:
+                if batch[t]:
+                    topic_queues[t].put(batch[t])
+                topic_queues[t].put(_SENTINEL)
+
+        # Start generator thread
         t0 = time.perf_counter()
-        for inst in all_installments:
-            sink.send("banking.installments", inst)
+        gen_thread = threading.Thread(target=generate_all_events, daemon=True)
+        gen_thread.start()
+
+        # Wait for all sender threads to finish
+        for t in sender_threads:
+            t.join()
+        gen_thread.join()
 
         elapsed = time.perf_counter() - t0
-        store.count_event("installments", len(all_installments))
-        logger.info("Sent %d installments in %.1fs (%.0f/sec)",
-                     len(all_installments), elapsed, len(all_installments) / max(elapsed, 0.001))
+        total_sent = sum(sender_results.values())
 
-        sink.flush()
+        # Record counts
+        store.count_event("transactions", counts["transactions"])
+        store.count_event("card_transactions", counts["card_transactions"])
+        store.count_event("trades", counts["trades"])
+        store.count_event("installments", len(all_installments))
+
+        logger.info(
+            "Streamed %d events in %.1fs (%.0f/sec) — "
+            "txns=%d, card_txns=%d, trades=%d, installments=%d",
+            total_sent,
+            elapsed,
+            total_sent / max(elapsed, 0.001),
+            counts["transactions"],
+            counts["card_transactions"],
+            counts["trades"],
+            len(all_installments),
+        )
+
+        # Flush all producers
+        for s in sender_sinks:
+            s.flush()
         logger.info("Kafka streaming complete")
     finally:
-        sink.close()
+        for s in sender_sinks:
+            s.close()
 
 
 def load_to_kafka(
@@ -441,10 +763,13 @@ def load_to_kafka(
     else:
         logger.info("CloudEvents headers: DISABLED")
 
-    # Initialize generators
-    transaction_gen = TransactionGenerator(seed=seed)
-    credit_card_gen = CreditCardGenerator(seed=seed)
-    trade_gen = TradeGenerator(seed=seed)
+    # Shared FakerPool for event generators
+    pool = FakerPool(seed=seed)
+
+    # Initialize generators (all share the same pool)
+    transaction_gen = TransactionGenerator(seed=seed, pool=pool)
+    credit_card_gen = CreditCardGenerator(seed=seed, pool=pool)
+    trade_gen = TradeGenerator(seed=seed, pool=pool)
 
     # Create Kafka sink
     config = ProducerConfig(
@@ -501,6 +826,7 @@ def load_to_kafka(
                 account_id=account.account_id,
                 stocks=stocks_list,
                 num_trades=20,
+                customer_id=account.customer_id,
             )
             for trade in trades:
                 store.add_trade(trade)
@@ -526,6 +852,7 @@ def load_to_kafka(
 def create_kafka_topics(
     bootstrap_servers: str,
     retention_hours: int = 168,
+    replication_factor: int = 1,
 ) -> None:
     """Create Kafka topics if they don't exist.
 
@@ -536,6 +863,8 @@ def create_kafka_topics(
     retention_hours : int
         Per-topic retention in hours (default: 168 = 7 days).
         Use 24 for bulk test loads to save disk space.
+    replication_factor : int
+        Topic replication factor (default: 1, use 3 for multi-broker clusters).
     """
     from confluent_kafka.admin import AdminClient, NewTopic
 
@@ -545,10 +874,10 @@ def create_kafka_topics(
     topic_config = {"retention.ms": retention_ms}
 
     topics = [
-        NewTopic("banking.transactions", num_partitions=3, replication_factor=1, config=topic_config),
-        NewTopic("banking.card-transactions", num_partitions=3, replication_factor=1, config=topic_config),
-        NewTopic("banking.trades", num_partitions=3, replication_factor=1, config=topic_config),
-        NewTopic("banking.installments", num_partitions=3, replication_factor=1, config=topic_config),
+        NewTopic("banking.transactions", num_partitions=6, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.card-transactions", num_partitions=6, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.trades", num_partitions=3, replication_factor=replication_factor, config=topic_config),
+        NewTopic("banking.installments", num_partitions=3, replication_factor=replication_factor, config=topic_config),
     ]
 
     logger.info("Topic retention: %d hours", retention_hours)
@@ -840,14 +1169,127 @@ def main() -> None:
         default=8,
         help="Kafka topic retention in hours (default: 8). Suited for test-and-clean workflows.",
     )
+    parser.add_argument(
+        "--kafka-cluster",
+        type=str,
+        choices=["cp", "oss"],
+        default=None,
+        help="Cluster preset: 'cp' (Confluent Platform, 1 broker) or 'oss' (Apache Kafka, 3 brokers). "
+        "Overrides --kafka-bootstrap, --schema-registry, --postgres-url, and replication factor.",
+    )
+    parser.add_argument(
+        "--replication-factor",
+        type=int,
+        default=None,
+        help="Kafka topic replication factor (auto-set by --kafka-cluster, or specify manually)",
+    )
+
+    # Real-time streaming mode
+    stream_group = parser.add_argument_group("real-time streaming")
+    stream_group.add_argument(
+        "--stream",
+        action="store_true",
+        help="Enable real-time streaming mode (continuous event generation at a fixed rate)",
+    )
+    stream_group.add_argument(
+        "--duration",
+        type=int,
+        default=None,
+        help="Streaming duration in seconds (e.g., 3600 for 1 hour). Required with --stream.",
+    )
+    stream_group.add_argument(
+        "--rate",
+        type=int,
+        default=None,
+        help="Target events per second (default: 1000)",
+    )
 
     args = parser.parse_args()
 
+    # Apply cluster preset if specified
+    if args.kafka_cluster:
+        preset = CLUSTER_PRESETS[args.kafka_cluster]
+        args.kafka_bootstrap = preset["kafka_bootstrap"]
+        args.schema_registry = preset["schema_registry"]
+        args.postgres_url = preset["postgres_url"]
+        if args.replication_factor is None:
+            args.replication_factor = preset["replication_factor"]
+
+    # Default replication factor
+    if args.replication_factor is None:
+        args.replication_factor = 1
+
+    # Validate streaming mode flags
+    if args.stream:
+        if args.duration is None:
+            parser.error("--duration is required with --stream")
+        if args.fast:
+            parser.error("--stream and --fast are mutually exclusive")
+
     # Auto-enable fast mode for large datasets
-    use_fast = args.fast or args.customers >= 10000
+    use_fast = args.fast or (args.customers >= 10000 and not args.stream)
 
     # Schema registry URL: None disables Avro (falls back to JSON)
     schema_registry = None if args.no_avro else args.schema_registry
+
+    # Real-time streaming mode
+    if args.stream:
+        rate = args.rate or 1000
+
+        logger.info("=" * 60)
+        logger.info("Data Generator - Real-Time Streaming Mode")
+        logger.info("=" * 60)
+        logger.info("Duration: %s (%d seconds)", _format_duration(args.duration), args.duration)
+        logger.info("Target rate: %d events/sec", rate)
+        logger.info("Expected total: ~%s events", f"{rate * args.duration:,}")
+        logger.info("Customers (warm-up): %d", args.customers)
+        logger.info("Seed: %d", args.seed)
+        logger.info("Serialization: %s", "JSON" if args.no_avro else "Avro (via Schema Registry)")
+        logger.info("Kafka: %s", args.kafka_bootstrap)
+        logger.info("=" * 60)
+
+        overall_start = time.perf_counter()
+
+        # Warm-up: generate master data
+        store = MasterDataStore()
+        all_installments = generate_master_data(store, args.customers, args.seed)
+
+        # Create topics if requested
+        if args.create_topics:
+            create_kafka_topics(
+                args.kafka_bootstrap,
+                retention_hours=args.retention_hours,
+                replication_factor=args.replication_factor,
+            )
+
+        # Snapshot offsets before streaming
+        kafka_offsets_before = get_kafka_offsets(args.kafka_bootstrap)
+
+        # Stream events at controlled rate
+        load_to_kafka_realtime(
+            store=store,
+            bootstrap_servers=args.kafka_bootstrap,
+            schema_registry_url=schema_registry,
+            seed=args.seed,
+            all_installments=all_installments,
+            duration_seconds=args.duration,
+            rate_per_second=rate,
+            use_cloudevents=not args.no_cloudevents,
+        )
+
+        overall_elapsed = time.perf_counter() - overall_start
+
+        # Print summary + validation
+        summary = store.summary()
+        total = sum(summary.values())
+        print_summary(
+            summary,
+            total,
+            overall_elapsed,
+            kafka_bootstrap=args.kafka_bootstrap,
+            kafka_offsets_before=kafka_offsets_before,
+        )
+        return
 
     logger.info("=" * 60)
     logger.info("Data Generator - Load to PostgreSQL & Kafka")
@@ -874,7 +1316,7 @@ def main() -> None:
 
         # Create Kafka topics if requested
         if args.create_topics and not args.skip_kafka:
-            create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours)
+            create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours, replication_factor=args.replication_factor)
 
         # Load to PostgreSQL with COPY
         if not args.skip_postgres:
@@ -897,7 +1339,7 @@ def main() -> None:
 
         # Create Kafka topics if requested
         if args.create_topics and not args.skip_kafka:
-            create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours)
+            create_kafka_topics(args.kafka_bootstrap, retention_hours=args.retention_hours, replication_factor=args.replication_factor)
 
         # Load to PostgreSQL
         if not args.skip_postgres:

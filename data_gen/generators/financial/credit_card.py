@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Iterator
 
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial import CardTransaction, CreditCard, Customer
 from data_gen.models.financial.enums import CardBrand, CardStatus, CardTransactionStatus
 
@@ -32,8 +33,8 @@ class CreditCardGenerator(BaseGenerator):
         "5999": ("Diversos", (20, 500)),
     }
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
     def generate_for_customer(
         self,
@@ -63,7 +64,7 @@ class CreditCardGenerator(BaseGenerator):
             created_at = datetime.now()
 
         return CreditCard(
-            card_id=self.fake.uuid4(),
+            card_id=self.pool.uuid(),
             customer_id=customer.customer_id,
             card_number_masked=f"****-****-****-{random.randint(1000, 9999)}",
             brand=brand,
@@ -125,8 +126,9 @@ class CreditCardGenerator(BaseGenerator):
         status = CardTransactionStatus.APPROVED if random.random() < 0.95 else CardTransactionStatus.DECLINED
 
         return CardTransaction(
-            transaction_id=self.fake.uuid4(),
+            transaction_id=self.pool.uuid(),
             card_id=card.card_id,
+            customer_id=card.customer_id,
             merchant_name=self._generate_merchant_name(mcc_code),
             merchant_category=category_name,
             mcc_code=mcc_code,
@@ -134,7 +136,7 @@ class CreditCardGenerator(BaseGenerator):
             installments=installments,
             timestamp=timestamp,
             status=status,
-            location_city=self.fake.city(),
+            location_city=self.pool.city(),
             location_country="BR",
         )
 
@@ -155,7 +157,7 @@ class CreditCardGenerator(BaseGenerator):
         credit_limit = random.randint(5, 100) * 1000  # 5k to 100k
 
         return CreditCard(
-            card_id=self.fake.uuid4(),
+            card_id=self.pool.uuid(),
             customer_id=customer_id,
             card_number_masked=f"****-****-****-{random.randint(1000, 9999)}",
             brand=brand,
@@ -182,7 +184,7 @@ class CreditCardGenerator(BaseGenerator):
         prefix_list = prefixes.get(mcc_code, ["Loja"])
         prefix = random.choice(prefix_list)
 
-        return f"{prefix} {self.fake.last_name()}"
+        return f"{prefix} {self.pool.last_name()}"
 
 
 class CardTransactionGenerator(BaseGenerator):
@@ -190,16 +192,18 @@ class CardTransactionGenerator(BaseGenerator):
 
     MCC_CATEGORIES = CreditCardGenerator.MCC_CATEGORIES
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
-    def generate(self, card_id: str) -> CardTransaction:
+    def generate(self, card_id: str, customer_id: str = "") -> CardTransaction:
         """Generate a card transaction.
 
         Parameters
         ----------
         card_id : str
             Card ID to associate with the transaction.
+        customer_id : str
+            Customer ID that owns the card.
 
         Returns
         -------
@@ -223,8 +227,9 @@ class CardTransactionGenerator(BaseGenerator):
         status = CardTransactionStatus.APPROVED if random.random() < 0.95 else CardTransactionStatus.DECLINED
 
         return CardTransaction(
-            transaction_id=self.fake.uuid4(),
+            transaction_id=self.pool.uuid(),
             card_id=card_id,
+            customer_id=customer_id,
             merchant_name=self._generate_merchant_name(mcc_code),
             merchant_category=category_name,
             mcc_code=mcc_code,
@@ -236,7 +241,7 @@ class CardTransactionGenerator(BaseGenerator):
                 minutes=random.randint(0, 59),
             ),
             status=status,
-            location_city=self.fake.city(),
+            location_city=self.pool.city(),
             location_country="BR",
         )
 
@@ -256,4 +261,4 @@ class CardTransactionGenerator(BaseGenerator):
         prefix_list = prefixes.get(mcc_code, ["Loja"])
         prefix = random.choice(prefix_list)
 
-        return f"{prefix} {self.fake.last_name()}"
+        return f"{prefix} {self.pool.last_name()}"

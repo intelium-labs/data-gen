@@ -13,6 +13,7 @@ from data_gen.generators.financial import (
     TransactionGenerator,
 )
 from data_gen.generators.financial.patterns import FraudPatternGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.store.financial import FinancialDataStore
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,10 @@ class FraudDetectionScenario:
             random.seed(seed)
 
         self.store = FinancialDataStore()
-        self._customer_gen = CustomerGenerator(seed=seed)
-        self._account_gen = AccountGenerator(seed=seed)
-        self._transaction_gen = TransactionGenerator(seed=seed)
+        pool = FakerPool(seed=seed)
+        self._customer_gen = CustomerGenerator(seed=seed, pool=pool)
+        self._account_gen = AccountGenerator(seed=seed, pool=pool)
+        self._transaction_gen = TransactionGenerator(seed=seed, pool=pool)
         self._fraud_gen = FraudPatternGenerator(seed=seed)
 
         self._fraud_transactions: list[Any] = []
@@ -120,7 +122,7 @@ class FraudDetectionScenario:
         # Generate normal transactions
         for _ in range(normal_count):
             account = random.choice(accounts)
-            transaction = self._transaction_gen.generate(account.account_id)
+            transaction = self._transaction_gen.generate(account.account_id, customer_id=account.customer_id)
             self.store.add_transaction(transaction)
 
         logger.info("Generated %d normal transactions", normal_count)

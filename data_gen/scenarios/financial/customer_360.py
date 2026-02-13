@@ -15,6 +15,7 @@ from data_gen.generators.financial import (
     TransactionGenerator,
 )
 from data_gen.generators.financial.credit_card import CardTransactionGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial.enums import LoanStatus, LoanType
 from data_gen.store.financial import FinancialDataStore
 
@@ -86,12 +87,13 @@ class Customer360Scenario:
             random.seed(seed)
 
         self.store = FinancialDataStore()
-        self._customer_gen = CustomerGenerator(seed=seed)
-        self._account_gen = AccountGenerator(seed=seed)
-        self._transaction_gen = TransactionGenerator(seed=seed)
-        self._card_gen = CreditCardGenerator(seed=seed)
-        self._card_tx_gen = CardTransactionGenerator(seed=seed)
-        self._loan_gen = LoanGenerator(seed=seed)
+        pool = FakerPool(seed=seed)
+        self._customer_gen = CustomerGenerator(seed=seed, pool=pool)
+        self._account_gen = AccountGenerator(seed=seed, pool=pool)
+        self._transaction_gen = TransactionGenerator(seed=seed, pool=pool)
+        self._card_gen = CreditCardGenerator(seed=seed, pool=pool)
+        self._card_tx_gen = CardTransactionGenerator(seed=seed, pool=pool)
+        self._loan_gen = LoanGenerator(seed=seed, pool=pool)
 
     def generate(self) -> FinancialDataStore:
         """Generate all data for the customer 360 scenario.
@@ -140,7 +142,7 @@ class Customer360Scenario:
                 self.transactions_per_account * 2,
             )
             for _ in range(num_transactions):
-                transaction = self._transaction_gen.generate(account.account_id)
+                transaction = self._transaction_gen.generate(account.account_id, customer_id=customer.customer_id)
                 self.store.add_transaction(transaction)
 
         # Maybe generate credit card
@@ -154,7 +156,7 @@ class Customer360Scenario:
                 self.card_transactions_per_card * 2,
             )
             for _ in range(num_card_tx):
-                card_tx = self._card_tx_gen.generate(card.card_id)
+                card_tx = self._card_tx_gen.generate(card.card_id, customer_id=customer.customer_id)
                 self.store.add_card_transaction(card_tx)
 
         # Maybe generate loan

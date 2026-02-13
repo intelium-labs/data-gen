@@ -44,6 +44,7 @@ class Trade:
 
     trade_id: str
     account_id: str  # Investment account (INVESTIMENTOS)
+    customer_id: str
     stock_id: str
     ticker: str  # Denormalized for convenience
     trade_type: TradeType

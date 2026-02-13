@@ -269,6 +269,7 @@ class TestJsonFileSink:
             tx = Transaction(
                 transaction_id="tx-001",
                 account_id="acct-001",
+                customer_id="cust-001",
                 transaction_type="PIX",
                 amount=Decimal("100.50"),
                 direction="DEBIT",
@@ -395,18 +396,22 @@ class TestKafkaSinkMocked:
 
     def test_producer_config_presets(self) -> None:
         """Test producer configuration presets."""
-        from data_gen.sinks.kafka import BULK, EVENT_BY_EVENT, FAST, RELIABLE
+        from data_gen.sinks.kafka import BULK, EVENT_BY_EVENT, FAST, RELIABLE, STREAMING
 
         assert RELIABLE.acks == "all"
         assert RELIABLE.enable_idempotence is True
         assert FAST.acks == "0"
         assert EVENT_BY_EVENT.batch_size == 1
-        assert BULK.acks == "1"
-        assert BULK.batch_size == 524288
+        assert BULK.acks == "0"
+        assert BULK.batch_size == 1048576
         assert BULK.linger_ms == 100
         assert BULK.compression == "lz4"
-        assert BULK.queue_buffering_max_messages == 500000
+        assert BULK.queue_buffering_max_messages == 1000000
         assert BULK.queue_buffering_max_kbytes == 2097152
+        assert STREAMING.acks == "1"
+        assert STREAMING.batch_size == 32768
+        assert STREAMING.linger_ms == 20
+        assert STREAMING.compression == "snappy"
 
     def test_producer_config_defaults(self) -> None:
         """Test ProducerConfig default values for new fields."""
@@ -732,6 +737,7 @@ class TestKafkaSinkMocked:
         tx = Transaction(
             transaction_id="tx-001",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.50"),
             direction="DEBIT",
@@ -1479,6 +1485,7 @@ class TestKafkaSinkAvroAndKeys:
         tx = Transaction(
             transaction_id="tx-001",
             account_id="acct-001",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.50"),
             direction="DEBIT",
@@ -1548,6 +1555,7 @@ class TestKafkaSinkAvroAndKeys:
         tx = Transaction(
             transaction_id="tx-001",
             account_id="acct-123",
+            customer_id="cust-001",
             transaction_type="PIX",
             amount=Decimal("100.00"),
             direction="DEBIT",

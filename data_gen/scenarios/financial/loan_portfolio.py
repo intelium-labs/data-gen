@@ -14,6 +14,7 @@ from data_gen.generators.financial import (
     LoanGenerator,
 )
 from data_gen.generators.financial.patterns import PaymentBehavior
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial.enums import InstallmentStatus, LoanStatus, LoanType
 from data_gen.store.financial import FinancialDataStore
 
@@ -85,9 +86,10 @@ class LoanPortfolioScenario:
             random.seed(seed)
 
         self.store = FinancialDataStore()
-        self._customer_gen = CustomerGenerator(seed=seed)
-        self._account_gen = AccountGenerator(seed=seed)
-        self._loan_gen = LoanGenerator(seed=seed)
+        self._pool = FakerPool(seed=seed)
+        self._customer_gen = CustomerGenerator(seed=seed, pool=self._pool)
+        self._account_gen = AccountGenerator(seed=seed, pool=self._pool)
+        self._loan_gen = LoanGenerator(seed=seed, pool=self._pool)
         self._payment_behavior = PaymentBehavior(seed=seed)
 
     def generate(self) -> FinancialDataStore:
@@ -133,7 +135,7 @@ class LoanPortfolioScenario:
                 # Generate property for housing loan
                 from data_gen.generators.financial.loan import PropertyGenerator
 
-                prop_gen = PropertyGenerator(seed=self.seed)
+                prop_gen = PropertyGenerator(seed=self.seed, pool=self._pool)
                 prop = prop_gen.generate()
                 self.store.add_property(prop)
                 property_id = prop.property_id

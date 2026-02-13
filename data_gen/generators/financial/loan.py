@@ -7,6 +7,7 @@ from typing import Iterator
 
 from data_gen.generators.address import AddressFactory, CountryDistribution
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial import Customer, Installment, Loan, Property
 from data_gen.models.financial.enums import (
     AmortizationSystem,
@@ -20,11 +21,12 @@ from data_gen.models.financial.enums import (
 class PropertyGenerator(BaseGenerator):
     """Generate synthetic properties for housing loans."""
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
         self._address_factory = AddressFactory(
             distribution=CountryDistribution.brazil_only(),
             seed=seed,
+            pool=self.pool,
         )
 
     def generate(self) -> Property:
@@ -38,7 +40,7 @@ class PropertyGenerator(BaseGenerator):
         property_value = random.randint(150, 2000) * 1000
 
         return Property(
-            property_id=self.fake.uuid4(),
+            property_id=self.pool.uuid(),
             property_type=random.choice([PropertyType.APARTMENT, PropertyType.HOUSE]),
             address=self._address_factory.generate_brazilian(),
             appraised_value=Decimal(str(property_value)),
@@ -74,11 +76,12 @@ class LoanGenerator(BaseGenerator):
         },
     }
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
         self._address_factory = AddressFactory(
             distribution=CountryDistribution.brazil_only(),
             seed=seed,
+            pool=self.pool,
         )
 
     def generate_with_installments(
@@ -123,7 +126,7 @@ class LoanGenerator(BaseGenerator):
         disbursement_date = (datetime.now() - timedelta(days=random.randint(30, 365))).date()
 
         loan = Loan(
-            loan_id=self.fake.uuid4(),
+            loan_id=self.pool.uuid(),
             customer_id=customer_id,
             loan_type=loan_type,
             principal=principal,
@@ -192,7 +195,7 @@ class LoanGenerator(BaseGenerator):
         disbursement_date = (approval_date + timedelta(days=random.randint(1, 7))).date()
 
         loan = Loan(
-            loan_id=self.fake.uuid4(),
+            loan_id=self.pool.uuid(),
             customer_id=customer.customer_id,
             loan_type=loan_type,
             principal=principal,
@@ -256,7 +259,7 @@ class LoanGenerator(BaseGenerator):
 
         # Create property
         prop = Property(
-            property_id=self.fake.uuid4(),
+            property_id=self.pool.uuid(),
             property_type=random.choice([PropertyType.APARTMENT, PropertyType.HOUSE]),
             address=self._address_factory.generate_brazilian(),
             appraised_value=Decimal(str(property_value)),
@@ -288,8 +291,9 @@ class LoanGenerator(BaseGenerator):
                 due_date = loan.disbursement_date + timedelta(days=30 * i)
 
                 yield Installment(
-                    installment_id=self.fake.uuid4(),
+                    installment_id=self.pool.uuid(),
                     loan_id=loan.loan_id,
+                    customer_id=loan.customer_id,
                     installment_number=i,
                     due_date=due_date,
                     principal_amount=Decimal(str(round(principal_payment, 2))),
@@ -312,8 +316,9 @@ class LoanGenerator(BaseGenerator):
                 due_date = loan.disbursement_date + timedelta(days=30 * i)
 
                 yield Installment(
-                    installment_id=self.fake.uuid4(),
+                    installment_id=self.pool.uuid(),
                     loan_id=loan.loan_id,
+                    customer_id=loan.customer_id,
                     installment_number=i,
                     due_date=due_date,
                     principal_amount=Decimal(str(round(principal_payment, 2))),

@@ -40,7 +40,8 @@ O gerador de dados simula um **banco brasileiro** com os seguintes tipos de enti
 │         │                                        │                         │
 │         └────────────────────────────────────────┘                         │
 │                              │                                              │
-│                    (todos eventos vinculados a accounts)                    │
+│              (todos eventos contêm customer_id desnormalizado               │
+│               para joins diretos em stream processing)                     │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -283,6 +284,7 @@ Transações de conta bancária (Pix, TED, depósitos, etc.).
 |-------|------|-----------|---------|-------------------|
 | `transaction_id` | UUID | Identificador único | `tx-abc123-...` | UUID v4 |
 | `account_id` | UUID | Referência da conta | `bc36dc59-...` | FK para Account |
+| `customer_id` | UUID | Referência ao cliente | `bdd640fb-...` | FK para Customer (desnormalizado) |
 | `transaction_type` | enum | Tipo de transação | `PIX` | Aleatório ponderado |
 | `amount` | decimal(15,2) | Valor da transação | `150.00` | Dist. lognormal |
 | `direction` | enum | Direção do dinheiro | `DEBIT` | Baseado no tipo |
@@ -335,6 +337,7 @@ Compras no cartão de crédito.
 |-------|------|-----------|---------|-------------------|
 | `transaction_id` | UUID | Identificador único | `ctx-abc123-...` | UUID v4 |
 | `card_id` | UUID | Referência do cartão | `a1b2c3d4-...` | FK para CreditCard |
+| `customer_id` | UUID | Referência ao cliente | `bdd640fb-...` | FK para Customer (desnormalizado) |
 | `merchant_name` | string | Nome do estabelecimento | `Supermercado Extra` | Da categoria MCC |
 | `merchant_category` | string | Nome da categoria | `Grocery Stores` | Descrição MCC |
 | `mcc_code` | string(4) | Código MCC | `5411` | MCC padrão |
@@ -379,6 +382,7 @@ Ordens de compra/venda de ações executadas na B3.
 |-------|------|-----------|---------|-------------------|
 | `trade_id` | UUID | Identificador único | `trade-abc123-...` | UUID v4 |
 | `account_id` | UUID | Conta de investimentos | `bc36dc59-...` | FK para Account (INVESTIMENTOS) |
+| `customer_id` | UUID | Referência ao cliente | `bdd640fb-...` | FK para Customer (desnormalizado) |
 | `stock_id` | UUID | Referência da ação | `stock-petr4-...` | FK para Stock |
 | `ticker` | string | Ticker da ação | `PETR4` | Desnormalizado |
 | `trade_type` | enum | Compra ou venda | `BUY` | Aleatório ponderado |
@@ -427,6 +431,7 @@ Eventos de pagamento de parcelas de empréstimos.
 |-------|------|-----------|---------|-------------------|
 | `installment_id` | UUID | Identificador único | `inst-abc123-...` | UUID v4 |
 | `loan_id` | UUID | Referência do empréstimo | `1a2bd69c-...` | FK para Loan |
+| `customer_id` | UUID | Referência ao cliente | `bdd640fb-...` | FK para Customer (desnormalizado) |
 | `installment_number` | int | Número da parcela | `5` | 1 até term_months |
 | `due_date` | date | Data de vencimento | `2024-03-15` | Mensal a partir do desembolso |
 | `principal_amount` | decimal(15,2) | Parte do principal | `1200.00` | Baseado na amortização |
@@ -564,15 +569,16 @@ O projeto separa dados em dois sistemas com integridade referencial garantida:
 │       (dados mestres)                │     │        (event streams)               │
 │                                      │     │                                      │
 │  customers ──┬── accounts ───────────│─FK─►│── banking.transactions               │
-│              │                       │     │      (account_id)                     │
+│              │                       │     │      (account_id, customer_id)        │
 │              ├── credit_cards ───────│─FK─►│── banking.card-transactions           │
-│              │                       │     │      (card_id)                         │
+│              │                       │     │      (card_id, customer_id)            │
 │              └── loans ──────────────│─FK─►│── banking.installments                │
-│                    │                 │     │      (loan_id)                         │
+│                    │                 │     │      (loan_id, customer_id)            │
 │                    └── properties    │     │                                      │
 │                                      │     │                                      │
 │  stocks ─────────────────────────────│─FK─►│── banking.trades                     │
-│                                      │     │      (account_id, stock_id)           │
+│                                      │     │      (account_id, customer_id,        │
+│                                      │     │       stock_id)                       │
 └─────────────────────────────────────┘     └─────────────────────────────────────┘
 ```
 
@@ -581,10 +587,14 @@ O projeto separa dados em dois sistemas com integridade referencial garantida:
 | Evento (Kafka) | Campo FK no Evento | Entidade Mestre (PostgreSQL) | Tipo de Validação |
 |---|---|---|---|
 | `banking.transactions` | `account_id` | `accounts` | FK simples |
+| `banking.transactions` | `customer_id` | `customers` | FK desnormalizada |
 | `banking.card-transactions` | `card_id` | `credit_cards` | FK simples |
+| `banking.card-transactions` | `customer_id` | `customers` | FK desnormalizada |
 | `banking.trades` | `account_id` | `accounts` | FK + tipo (INVESTIMENTOS) |
+| `banking.trades` | `customer_id` | `customers` | FK desnormalizada |
 | `banking.trades` | `stock_id` | `stocks` | FK simples |
 | `banking.installments` | `loan_id` | `loans` | FK simples |
+| `banking.installments` | `customer_id` | `customers` | FK desnormalizada |
 
 ### Chaves de Mensagem Kafka
 

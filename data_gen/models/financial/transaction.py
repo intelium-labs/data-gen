@@ -18,6 +18,7 @@ class Transaction:
 
     transaction_id: str
     account_id: str
+    customer_id: str
     transaction_type: TransactionType
     amount: Decimal
     direction: Direction

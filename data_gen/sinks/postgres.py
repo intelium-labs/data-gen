@@ -60,6 +60,7 @@ class PostgresSink:
         "transactions": [
             "transaction_id",
             "account_id",
+            "customer_id",
             "transaction_type",
             "amount",
             "direction",
@@ -88,6 +89,7 @@ class PostgresSink:
         "card_transactions": [
             "transaction_id",
             "card_id",
+            "customer_id",
             "merchant_name",
             "merchant_category",
             "mcc_code",
@@ -117,6 +119,7 @@ class PostgresSink:
         "installments": [
             "installment_id",
             "loan_id",
+            "customer_id",
             "installment_number",
             "due_date",
             "principal_amount",
@@ -447,6 +450,7 @@ class PostgresSink:
             incremental_id SERIAL,
             transaction_id VARCHAR(36) PRIMARY KEY,
             account_id VARCHAR(36) REFERENCES accounts(account_id),
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
             transaction_type VARCHAR(20),
             amount DECIMAL(15,2),
             direction VARCHAR(10),
@@ -465,6 +469,7 @@ class PostgresSink:
             incremental_id SERIAL,
             transaction_id VARCHAR(36) PRIMARY KEY,
             card_id VARCHAR(36) REFERENCES credit_cards(card_id),
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
             merchant_name VARCHAR(255),
             merchant_category VARCHAR(100),
             mcc_code VARCHAR(10),
@@ -482,6 +487,7 @@ class PostgresSink:
             incremental_id SERIAL,
             installment_id VARCHAR(36) PRIMARY KEY,
             loan_id VARCHAR(36) REFERENCES loans(loan_id),
+            customer_id VARCHAR(36) REFERENCES customers(customer_id),
             installment_number INTEGER,
             due_date DATE,
             principal_amount DECIMAL(15,2),

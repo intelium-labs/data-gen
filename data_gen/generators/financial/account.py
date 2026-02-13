@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Iterator
 
 from data_gen.generators.base import BaseGenerator
+from data_gen.generators.pool import FakerPool
 from data_gen.models.financial import Account
 from data_gen.models.financial.enums import AccountStatus, AccountType
 
@@ -33,8 +34,8 @@ class AccountGenerator(BaseGenerator):
         "336": "C6 Bank",
     }
 
-    def __init__(self, seed: int | None = None) -> None:
-        super().__init__(seed)
+    def __init__(self, seed: int | None = None, pool: FakerPool | None = None) -> None:
+        super().__init__(seed, pool=pool)
 
     def generate(self, customer_id: str) -> Account:
         """Generate a single account for a customer.
@@ -105,7 +106,7 @@ class AccountGenerator(BaseGenerator):
             created_at = datetime.now()
 
         return Account(
-            account_id=self.fake.uuid4(),
+            account_id=self.pool.uuid(),
             customer_id=customer_id,
             account_type=account_type,
             bank_code=bank_code,
